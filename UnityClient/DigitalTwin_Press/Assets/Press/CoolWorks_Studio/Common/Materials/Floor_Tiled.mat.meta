@@ -1,0 +1,16 @@
+fileFormatVersion: 2
+guid: 09a30b50ac04854468d0a5cd9f681956
+timeCreated: 1507154981
+licenseType: Store
+NativeFormatImporter:
+  mainObjectFileID: 2100000
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 258433
+  packageName: Hydraulic Press Set
+  packageVersion: 1.0.1
+  assetPath: Assets/CoolWorks_Studio/Common/Materials/Floor_Tiled.mat
+  uploadId: 731431

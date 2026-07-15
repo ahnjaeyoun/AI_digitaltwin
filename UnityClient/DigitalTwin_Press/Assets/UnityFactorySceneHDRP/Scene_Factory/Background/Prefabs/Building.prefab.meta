@@ -1,0 +1,14 @@
+fileFormatVersion: 2
+guid: 15e7a401df519f442b06e6c4250eabcf
+PrefabImporter:
+  externalObjects: {}
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 276400
+  packageName: UnityFactory
+  packageVersion: 1.0
+  assetPath: Assets/UnityFactorySceneHDRP/Scene_Factory/Background/Prefabs/Building.prefab
+  uploadId: 645177

@@ -1,0 +1,15 @@
+fileFormatVersion: 2
+guid: dbb6d0b91657317429729e9a47f3db6f
+NativeFormatImporter:
+  externalObjects: {}
+  mainObjectFileID: 9100000
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 276400
+  packageName: UnityFactory
+  packageVersion: 1.0
+  assetPath: Assets/UnityFactorySceneHDRP/Scene_Factory/AnimationSample/AnimatorController/Standing1.controller
+  uploadId: 645177

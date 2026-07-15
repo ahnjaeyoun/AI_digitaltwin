@@ -1,0 +1,15 @@
+fileFormatVersion: 2
+guid: a6d7348808b9cbc45bd04ae536bf5cbe
+NativeFormatImporter:
+  externalObjects: {}
+  mainObjectFileID: 112000000
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 258433
+  packageName: Hydraulic Press Set
+  packageVersion: 1.0.1
+  assetPath: Assets/CoolWorks_Studio/Hydraulic_Press_Set/Examples/Hydraulic_Press_Set/LightingData.asset
+  uploadId: 731431

@@ -1,0 +1,15 @@
+fileFormatVersion: 2
+guid: 8367f19891fc6ca469f8fb6374529408
+NativeFormatImporter:
+  externalObjects: {}
+  mainObjectFileID: 4890085278179872738
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 276400
+  packageName: UnityFactory
+  packageVersion: 1.0
+  assetPath: Assets/UnityFactorySceneHDRP/Scene_Factory/Background/Scenes/Factory_LightingSettings.lighting
+  uploadId: 645177

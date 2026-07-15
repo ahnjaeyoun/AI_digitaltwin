@@ -1,0 +1,15 @@
+fileFormatVersion: 2
+guid: c1a60a1a31ebd8348afe42c6092a4418
+NativeFormatImporter:
+  externalObjects: {}
+  mainObjectFileID: 112000000
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 276400
+  packageName: UnityFactory
+  packageVersion: 1.0
+  assetPath: Assets/UnityFactorySceneHDRP/Scene_Factory/Background/Scenes/Factory_BuildingOnly/LightingData.asset
+  uploadId: 645177

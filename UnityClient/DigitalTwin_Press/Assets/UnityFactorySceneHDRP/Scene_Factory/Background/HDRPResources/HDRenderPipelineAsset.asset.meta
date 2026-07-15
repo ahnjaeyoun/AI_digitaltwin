@@ -1,0 +1,15 @@
+fileFormatVersion: 2
+guid: e751c06e29a11df46a4874898a549712
+NativeFormatImporter:
+  externalObjects: {}
+  mainObjectFileID: 11400000
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 276400
+  packageName: UnityFactory
+  packageVersion: 1.0
+  assetPath: Assets/UnityFactorySceneHDRP/Scene_Factory/Background/HDRPResources/HDRenderPipelineAsset.asset
+  uploadId: 645177

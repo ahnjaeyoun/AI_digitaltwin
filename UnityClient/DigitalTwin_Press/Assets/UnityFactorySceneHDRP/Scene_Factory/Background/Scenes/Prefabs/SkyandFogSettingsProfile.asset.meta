@@ -1,0 +1,15 @@
+fileFormatVersion: 2
+guid: cca64d1ce8d6a2545adedefeb5acfca9
+NativeFormatImporter:
+  externalObjects: {}
+  mainObjectFileID: 11400000
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 276400
+  packageName: UnityFactory
+  packageVersion: 1.0
+  assetPath: Assets/UnityFactorySceneHDRP/Scene_Factory/Background/Scenes/Prefabs/SkyandFogSettingsProfile.asset
+  uploadId: 645177

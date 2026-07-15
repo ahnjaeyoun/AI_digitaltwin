@@ -1,0 +1,14 @@
+fileFormatVersion: 2
+guid: 776db93ca35c9b84ca399ce9d6ec177d
+PrefabImporter:
+  externalObjects: {}
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 276400
+  packageName: UnityFactory
+  packageVersion: 1.0
+  assetPath: Assets/UnityFactorySceneHDRP/Scene_Factory/Movable/Prefabs/Product.prefab
+  uploadId: 645177

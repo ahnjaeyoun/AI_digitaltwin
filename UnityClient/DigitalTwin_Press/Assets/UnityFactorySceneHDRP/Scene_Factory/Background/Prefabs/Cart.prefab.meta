@@ -1,0 +1,14 @@
+fileFormatVersion: 2
+guid: cfed15da13e72184bb1ab584e2988601
+PrefabImporter:
+  externalObjects: {}
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 276400
+  packageName: UnityFactory
+  packageVersion: 1.0
+  assetPath: Assets/UnityFactorySceneHDRP/Scene_Factory/Background/Prefabs/Cart.prefab
+  uploadId: 645177

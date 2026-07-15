@@ -1,0 +1,15 @@
+fileFormatVersion: 2
+guid: dd9a0111d3cec7d40a957aad8cd8cc4d
+NativeFormatImporter:
+  externalObjects: {}
+  mainObjectFileID: 2100000
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 276400
+  packageName: UnityFactory
+  packageVersion: 1.0
+  assetPath: Assets/UnityFactorySceneHDRP/Scene_Factory/Movable/Materials/Worker_Head.mat
+  uploadId: 645177

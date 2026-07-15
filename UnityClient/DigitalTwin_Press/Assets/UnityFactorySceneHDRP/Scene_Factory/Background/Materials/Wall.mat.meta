@@ -1,0 +1,15 @@
+fileFormatVersion: 2
+guid: c708fd0d36698bb4fbb374d2ec99c7c1
+NativeFormatImporter:
+  externalObjects: {}
+  mainObjectFileID: 2100000
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 276400
+  packageName: UnityFactory
+  packageVersion: 1.0
+  assetPath: Assets/UnityFactorySceneHDRP/Scene_Factory/Background/Materials/Wall.mat
+  uploadId: 645177

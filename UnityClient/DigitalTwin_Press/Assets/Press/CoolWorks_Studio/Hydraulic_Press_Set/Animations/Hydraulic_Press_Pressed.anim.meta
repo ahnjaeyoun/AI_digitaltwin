@@ -1,0 +1,15 @@
+fileFormatVersion: 2
+guid: b758a2227b4d8ec469ca24f34728ff44
+NativeFormatImporter:
+  externalObjects: {}
+  mainObjectFileID: 7400000
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 258433
+  packageName: Hydraulic Press Set
+  packageVersion: 1.0.1
+  assetPath: Assets/CoolWorks_Studio/Hydraulic_Press_Set/Animations/Hydraulic_Press_Pressed.anim
+  uploadId: 731431

@@ -1,0 +1,15 @@
+fileFormatVersion: 2
+guid: e80ce9ab9d9a0124b81ddaae75ffba1c
+NativeFormatImporter:
+  externalObjects: {}
+  mainObjectFileID: 2100000
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 276400
+  packageName: UnityFactory
+  packageVersion: 1.0
+  assetPath: Assets/UnityFactorySceneHDRP/Scene_Factory/Background/Materials/Sus.mat
+  uploadId: 645177
