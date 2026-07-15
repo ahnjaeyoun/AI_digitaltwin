@@ -1338,7 +1338,9 @@ std::vector<std::string> build_output_row(
     const std::string target_chamber = row_value(input, "Press.target_chamber", row_value(input, "Press_target_chamber", active_mode == "upstroke" ? "rod" : "cap"));
 
     const std::string load_node =
-        target_chamber == "rod" || active_mode == "upstroke" ? "N_CYL_ROD"
+        target_chamber == "rod" ? "N_CYL_ROD"
+        : target_chamber == "cap" ? "N_CYL_CAP"
+        : active_mode == "upstroke" ? "N_CYL_ROD"
         : active_mode == "relief" ? "N_TANK_RELIEF"
         : "N_CYL_CAP";
     const double load_pressure = map_get_double(result.nodes, load_node);
@@ -1453,10 +1455,20 @@ int run_csv_solver(bool watch, const std::filesystem::path& input_path, const st
                 runtime_file << std::setw(2) << runtime << '\n';
                 runtime_file.close();
 
+                const auto solve_started_at = std::chrono::steady_clock::now();
                 const std::string solver_text = run_solver_to_text(runtime_network);
                 const SolverTextResult parsed = parse_solver_text(solver_text);
                 append_output_row(output_path, build_output_row(rows[i], i, parsed, "ok"));
-                std::cout << "processed input row " << i + 1 << " -> " << output_path.string() << '\n';
+                const auto solve_elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                    std::chrono::steady_clock::now() - solve_started_at).count();
+                std::cout
+                    << "[SOLVER_COMPLETED] row=" << i + 1
+                    << " cycle_id=" << row_value(rows[i], "cycle_id")
+                    << " timestamp=" << row_value(rows[i], "timestamp")
+                    << " elapsed_ms=" << solve_elapsed_ms
+                    << " status=ok"
+                    << " output=" << output_path.string()
+                    << std::endl;
             }
             processed_rows = rows.size();
         }
