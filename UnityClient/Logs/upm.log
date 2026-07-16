@@ -1,0 +1,86 @@
+[2026-07-16T05:28:26.781Z][INFO] Command-line: 'C:\\Program Files\\Unity\\Hub\\Editor\\6000.5.2f1\\Editor\\Data\\Resources\\PackageManager\\Server\\UnityPackageManager.exe' server -s 24984 --ipc-path Unity-Upm-24984 -l 2 --log-file 'F:\\휴면 교육센터\\AI_digitaltwin\\unity_Koo\\UnityClient/Logs/upm.log'
+[2026-07-16T05:28:26.885Z][INFO] IPC server started (IPC path=Unity-Upm-24984).
+[2026-07-16T05:28:26.885Z][INFO] Hint: To connect to this UPM instance, launch Unity with the command-line parameter -upmIpcPath Upm-24984.
+[2026-07-16T05:29:03.905Z][INFO] project:list-packages <-- Request received
+params: {}
+[2026-07-16T05:29:03.909Z][INFO] project:list-packages --> 404 (4 ms)
+[2026-07-16T05:29:04.096Z][INFO] project:list-packages <-- Request received
+params: {}
+[2026-07-16T05:29:04.106Z][INFO] config:project:get-registries <-- Request received
+params: {}
+[2026-07-16T05:29:04.213Z][INFO] project:update-dependencies <-- Request received
+params: {}
+[2026-07-16T05:29:04.421Z][INFO] project:update-dependencies --> 200 (208 ms)
+[2026-07-16T05:29:04.445Z][INFO] project:resolve-packages <-- Request received
+params: {}
+[2026-07-16T05:29:04.516Z][INFO] project:list-packages --> 200 (420 ms)
+[2026-07-16T05:29:04.586Z][INFO] config:project:get-registries --> 200 (480 ms)
+[2026-07-16T05:29:05.814Z][INFO] project:resolve-packages --> 200 (1369 ms)
+[2026-07-16T05:29:26.515Z][INFO] project:list-packages <-- Request received
+params: {}
+[2026-07-16T05:29:26.540Z][INFO] project:list-packages <-- Request received
+params: {}
+[2026-07-16T05:29:26.607Z][INFO] project:list-packages --> 200 (92 ms)
+[2026-07-16T05:29:26.610Z][INFO] config:project:get-registries <-- Request received
+params: {}
+[2026-07-16T05:29:26.632Z][INFO] config:project:get-registries --> 200 (22 ms)
+[2026-07-16T05:29:26.633Z][INFO] project:list-packages --> 200 (93 ms)
+[2026-07-16T05:29:29.991Z][INFO] project:list-packages <-- Request received
+params: {}
+[2026-07-16T05:29:30.054Z][INFO] project:list-packages --> 200 (63 ms)
+[2026-07-16T05:29:32.968Z][INFO] packages:get-all-packageinfo <-- Request received
+params: {}
+[2026-07-16T05:29:32.982Z][INFO] packages:get-all-packageinfo <-- Request received
+params: {}
+[2026-07-16T05:29:35.010Z][INFO] packages:get-all-packageinfo --> 200 (2028 ms)
+[2026-07-16T05:29:35.219Z][INFO] packages:get-packageinfo <-- Request received
+params: {
+  "packageId": "com.unity.addressables@2.9.1"
+}
+[2026-07-16T05:29:35.230Z][INFO] packages:get-packageinfo <-- Request received
+params: {
+  "packageId": "com.unity.ads.ios-support@1.0.1"
+}
+[2026-07-16T05:29:35.244Z][INFO] packages:get-packageinfo <-- Request received
+params: {
+  "packageId": "com.unity.collab-proxy@2.12.4"
+}
+[2026-07-16T05:29:35.259Z][INFO] packages:get-packageinfo <-- Request received
+params: {
+  "packageId": "com.unity.learn.iet-framework@5.0.4"
+}
+[2026-07-16T05:29:35.279Z][INFO] packages:get-packageinfo <-- Request received
+params: {
+  "packageId": "com.unity.learn.iet-framework.authoring@1.5.4"
+}
+[2026-07-16T05:29:35.291Z][INFO] packages:get-packageinfo <-- Request received
+params: {
+  "packageId": "com.unity.scriptablebuildpipeline@2.6.1"
+}
+[2026-07-16T05:29:35.301Z][INFO] packages:get-packageinfo <-- Request received
+params: {
+  "packageId": "com.unity.services.friends@1.1.1"
+}
+[2026-07-16T05:29:35.317Z][INFO] packages:get-packageinfo <-- Request received
+params: {
+  "packageId": "com.unity.services.moderation@1.0.2"
+}
+[2026-07-16T05:29:35.328Z][INFO] packages:get-packageinfo <-- Request received
+params: {
+  "packageId": "com.unity.xr.compositionlayers@2.4.0"
+}
+[2026-07-16T05:29:35.342Z][INFO] packages:get-packageinfo <-- Request received
+params: {
+  "packageId": "com.unity.xr.management@4.5.4"
+}
+[2026-07-16T05:29:37.212Z][INFO] packages:get-packageinfo --> 200 (1895 ms)
+[2026-07-16T05:29:37.216Z][INFO] packages:get-packageinfo --> 200 (1915 ms)
+[2026-07-16T05:29:37.226Z][INFO] packages:get-all-packageinfo --> 200 (4259 ms)
+[2026-07-16T05:29:37.239Z][INFO] packages:get-packageinfo --> 200 (1980 ms)
+[2026-07-16T05:29:37.241Z][INFO] packages:get-packageinfo --> 200 (1899 ms)
+[2026-07-16T05:29:37.242Z][INFO] packages:get-packageinfo --> 200 (1964 ms)
+[2026-07-16T05:29:37.242Z][INFO] packages:get-packageinfo --> 200 (1914 ms)
+[2026-07-16T05:29:37.243Z][INFO] packages:get-packageinfo --> 200 (2012 ms)
+[2026-07-16T05:29:37.247Z][INFO] packages:get-packageinfo --> 200 (2003 ms)
+[2026-07-16T05:29:37.252Z][INFO] packages:get-packageinfo --> 200 (2033 ms)
+[2026-07-16T05:29:37.254Z][INFO] packages:get-packageinfo --> 200 (1963 ms)
