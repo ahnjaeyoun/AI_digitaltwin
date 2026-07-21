@@ -32,8 +32,13 @@ namespace DigitalTwin.View
         private const float WallLightBand = 3.5f;
         private const float ViewPitch = 58f;
         private const float ViewYaw = 0f;
+        private const float MaximumVisibleWorldHeight = 6f;
+        private const float FloatingBeamMinimumHeight = 2.5f;
+        private const float FloatingBeamMinimumLength = 6f;
+        private const float FloatingBeamAspectRatio = 8f;
         private const float NavigationWidth = 210f;
         private const int LineCount = 16;
+        private const float StatusMarkerSize = 38f;
 
         private Camera topViewCamera;
         private Vector3 cameraPosition;
@@ -46,6 +51,8 @@ namespace DigitalTwin.View
         private bool hasFactoryViewBounds;
         private int selectedLineNumber;
         private readonly FactoryStatus[] lineStatuses = new FactoryStatus[LineCount];
+        private readonly Vector3[] lineMarkerWorldPositions = new Vector3[LineCount];
+        private readonly bool[] hasLineMarkerPosition = new bool[LineCount];
         private Vector2 lineScrollPosition;
         private GUIStyle navigationTitleStyle;
         private GUIStyle navigationButtonStyle;
@@ -53,6 +60,8 @@ namespace DigitalTwin.View
         private GUIStyle navigationLabelStyle;
         private GUIStyle statusLabelStyle;
         private GUIStyle legendStyle;
+        private GUIStyle mapMarkerLabelStyle;
+        private GUIStyle mapMarkerButtonStyle;
         private Texture2D navigationPanelTexture;
         private Texture2D navigationRowTexture;
         private Texture2D navigationHoverTexture;
@@ -104,6 +113,7 @@ namespace DigitalTwin.View
         public void RefreshView()
         {
             Scene activeScene = SceneManager.GetActiveScene();
+            HideRenderersAboveWorldHeight(activeScene, MaximumVisibleWorldHeight);
             Transform lineRoot = FindLineRoot(activeScene);
             if (lineRoot == null)
             {
@@ -119,17 +129,21 @@ namespace DigitalTwin.View
             }
 
             AssignLayer(lineRenderers, TopViewLayer);
+            CacheLineMarkerPositions(lineRoot);
 
             Renderer[] structureRenderers = CollectStructureRenderers(activeScene, out Transform ceilingRoot);
             AssignLayer(structureRenderers, StructureLayer);
             Transform ceilingFixtureRoot = FindSceneTransform(activeScene, "Light");
+            int removedWallWindowCount = RemoveWallWindowVisuals(
+                activeScene,
+                FindSceneTransform(activeScene, "Building"));
             int removedCeilingStructureCount = PrepareCeilingForTopView(
                 structureRenderers,
                 ceilingRoot,
                 ceilingFixtureRoot);
             removedCeilingStructureCount += RemoveCeilingLightVisuals(activeScene);
             removedCeilingStructureCount += RemoveLongHorizontalStructureLines(
-                structureRenderers,
+                activeScene,
                 lineBounds);
 
             // Keep workers, carts, props, and controller visuals in the top-view camera.
@@ -184,6 +198,7 @@ namespace DigitalTwin.View
                 return;
 
             EnsureNavigationStyles();
+            DrawFactoryStatusMarkers();
             DrawLineNavigation();
         }
 
@@ -241,6 +256,79 @@ namespace DigitalTwin.View
                 (1 << StructureLayer) |
                 (1 << ActivityLayer);
             topViewCamera.enabled = true;
+        }
+
+        private void CacheLineMarkerPositions(Transform lineRoot)
+        {
+            for (int index = 0; index < LineCount; index++)
+            {
+                hasLineMarkerPosition[index] = false;
+                Transform line = FindNumberedLine(lineRoot, index + 1);
+                if (line == null ||
+                    !TryCalculateBounds(line.GetComponentsInChildren<Renderer>(true), out Bounds bounds))
+                {
+                    continue;
+                }
+
+                lineMarkerWorldPositions[index] = bounds.center;
+                hasLineMarkerPosition[index] = true;
+            }
+        }
+
+        private void DrawFactoryStatusMarkers()
+        {
+            if (topViewCamera == null)
+                return;
+
+            for (int index = 0; index < LineCount; index++)
+            {
+                if (!hasLineMarkerPosition[index])
+                    continue;
+
+                Vector3 screenPoint = topViewCamera.WorldToScreenPoint(lineMarkerWorldPositions[index]);
+                if (screenPoint.z <= 0f)
+                    continue;
+
+                Vector2 guiPoint = new Vector2(screenPoint.x, Screen.height - screenPoint.y);
+                if (guiPoint.x < -StatusMarkerSize || guiPoint.x > Screen.width + StatusMarkerSize ||
+                    guiPoint.y < -StatusMarkerSize || guiPoint.y > Screen.height + StatusMarkerSize)
+                {
+                    continue;
+                }
+
+                FactoryStatus status = lineStatuses[index];
+                Texture2D statusTexture = GetStatusTexture(status);
+                Rect marker = new Rect(
+                    guiPoint.x - StatusMarkerSize * 0.5f,
+                    guiPoint.y - StatusMarkerSize * 0.5f,
+                    StatusMarkerSize,
+                    StatusMarkerSize);
+                Rect glow = new Rect(marker.x - 10f, marker.y - 10f,
+                    marker.width + 20f, marker.height + 20f);
+
+                Color previousColor = GUI.color;
+                GUI.color = new Color(1f, 1f, 1f, 0.24f);
+                GUI.DrawTexture(glow, statusTexture, ScaleMode.ScaleToFit, true);
+                GUI.color = Color.white;
+                GUI.DrawTexture(marker, statusTexture, ScaleMode.ScaleToFit, true);
+                GUI.color = previousColor;
+
+                Rect clickArea = new Rect(marker.x - 7f, marker.y - 7f,
+                    marker.width + 14f, marker.height + 28f);
+                if (GUI.Button(
+                        clickArea,
+                        new GUIContent(string.Empty,
+                            $"라인 {index + 1:00} - {GetStatusText(status)}"),
+                        mapMarkerButtonStyle))
+                {
+                    SelectLine(index + 1);
+                }
+
+                Rect label = new Rect(marker.center.x - 27f, marker.yMax + 1f, 54f, 18f);
+                DrawColorRect(label, new Color32(8, 18, 33, 220));
+                mapMarkerLabelStyle.normal.textColor = GetStatusColor(status);
+                GUI.Label(label, $"L{index + 1:00}", mapMarkerLabelStyle);
+            }
         }
 
         private void DrawLineNavigation()
@@ -327,7 +415,7 @@ namespace DigitalTwin.View
             }
         }
 
-        private void SelectLine(int lineNumber)
+        public void SelectLine(int lineNumber)
         {
             selectedLineNumber = Mathf.Clamp(lineNumber, 0, LineCount);
 
@@ -346,10 +434,14 @@ namespace DigitalTwin.View
                 FrameBounds(lineBounds, 1.42f);
             }
 
-            if (selectedLineNumber == 11 &&
-                DigitalTwin.Line11.Line11PressDetailController.Instance != null)
+            DigitalTwin.Line11.Line11PressDetailController detailController =
+                DigitalTwin.Line11.Line11PressDetailController.Instance;
+            if (detailController != null)
             {
-                DigitalTwin.Line11.Line11PressDetailController.Instance.OpenDetail();
+                if (selectedLineNumber == 11)
+                    detailController.OpenDetail();
+                else
+                    detailController.OpenLineDetail(selectedLineNumber);
             }
         }
 
@@ -368,7 +460,15 @@ namespace DigitalTwin.View
             return null;
         }
 
-        private FactoryStatus GetFactoryStatus()
+        public FactoryStatus GetLineStatus(int lineNumber)
+        {
+            if (lineNumber < 1 || lineNumber > LineCount)
+                return FactoryStatus.Normal;
+
+            return lineStatuses[lineNumber - 1];
+        }
+
+        public FactoryStatus GetFactoryStatus()
         {
             FactoryStatus result = FactoryStatus.Normal;
             foreach (FactoryStatus status in lineStatuses)
@@ -422,7 +522,8 @@ namespace DigitalTwin.View
         private void EnsureNavigationStyles()
         {
             if (navigationTitleStyle != null && navigationButtonStyle != null &&
-                normalStatusTexture != null)
+                normalStatusTexture != null && mapMarkerLabelStyle != null &&
+                mapMarkerButtonStyle != null)
             {
                 return;
             }
@@ -487,6 +588,13 @@ namespace DigitalTwin.View
 
             selectedNavigationButtonStyle = new GUIStyle(navigationButtonStyle);
             selectedNavigationButtonStyle.normal.background = navigationSelectedTexture;
+
+            mapMarkerLabelStyle = new GUIStyle(navigationTitleStyle)
+            {
+                fontSize = 12,
+                alignment = TextAnchor.MiddleCenter
+            };
+            mapMarkerButtonStyle = new GUIStyle(GUIStyle.none);
         }
 
         private static Texture2D CreateSolidTexture(Color color)
@@ -498,6 +606,14 @@ namespace DigitalTwin.View
             texture.SetPixel(0, 0, color);
             texture.Apply();
             return texture;
+        }
+
+        private static void DrawColorRect(Rect rect, Color color)
+        {
+            Color previousColor = GUI.color;
+            GUI.color = color;
+            GUI.DrawTexture(rect, Texture2D.whiteTexture);
+            GUI.color = previousColor;
         }
 
         private static Texture2D CreateCircleTexture(Color color)
@@ -572,6 +688,37 @@ namespace DigitalTwin.View
             }
         }
 
+        /// <summary>
+        /// Hides complete scene objects that touch or cross the requested
+        /// world-space height. This also removes floor-to-ceiling pillars and
+        /// their overhead connectors instead of leaving the lower pillar visible.
+        /// </summary>
+        private static int HideRenderersAboveWorldHeight(Scene scene, float maximumHeight)
+        {
+            int hiddenCount = 0;
+            Renderer[] sceneRenderers = FindObjectsByType<Renderer>(FindObjectsInactive.Include);
+
+            foreach (Renderer renderer in sceneRenderers)
+            {
+                if (renderer == null || !renderer.enabled ||
+                    renderer.gameObject.scene != scene ||
+                    renderer.gameObject.layer == PreviewLayer)
+                {
+                    continue;
+                }
+
+                Bounds bounds = renderer.bounds;
+                if (!IsFinite(bounds.center) || !IsFinite(bounds.extents) ||
+                    bounds.max.y < maximumHeight)
+                    continue;
+
+                renderer.enabled = false;
+                hiddenCount++;
+            }
+
+            return hiddenCount;
+        }
+
         private static Renderer[] CollectStructureRenderers(Scene scene, out Transform ceilingRoot)
         {
             ceilingRoot = FindSceneTransform(scene, "Ceiling");
@@ -592,6 +739,80 @@ namespace DigitalTwin.View
             AddUniqueRenderers(FindSceneTransform(scene, "Prop"), renderers);
             AddUniqueRenderers(FindSceneTransform(scene, "Controller"), renderers);
             return renderers.ToArray();
+        }
+
+        private static int RemoveWallWindowVisuals(Scene scene, Transform buildingRoot)
+        {
+            int removedCount = 0;
+            if (buildingRoot != null)
+            {
+                foreach (Renderer renderer in buildingRoot.GetComponentsInChildren<Renderer>(true))
+                {
+                    if (renderer == null || !renderer.enabled || !IsWallWindowRenderer(renderer))
+                        continue;
+
+                    renderer.enabled = false;
+                    removedCount++;
+                }
+            }
+
+            foreach (Light sceneLight in FindObjectsByType<Light>(FindObjectsInactive.Include))
+            {
+                if (sceneLight == null || sceneLight.gameObject.scene != scene)
+                    continue;
+
+                if (ContainsWindowName(sceneLight.transform))
+                    sceneLight.enabled = false;
+            }
+
+            return removedCount;
+        }
+
+        private static bool IsWallWindowRenderer(Renderer renderer)
+        {
+            if (ContainsWindowName(renderer.transform))
+                return true;
+
+            int materialCount = 0;
+            int windowMaterialCount = 0;
+            foreach (Material material in renderer.sharedMaterials)
+            {
+                if (material == null)
+                    continue;
+
+                materialCount++;
+                string materialName = material.name;
+                if (materialName.IndexOf("Window", System.StringComparison.OrdinalIgnoreCase) >= 0 ||
+                    materialName.IndexOf("Glass", System.StringComparison.OrdinalIgnoreCase) >= 0)
+                {
+                    windowMaterialCount++;
+                }
+            }
+
+            // Do not disable a combined wall mesh merely because one of its
+            // sub-materials is glass. Named window objects are handled above.
+            return materialCount > 0 && windowMaterialCount == materialCount;
+        }
+
+        private static bool ContainsWindowName(Transform transform)
+        {
+            Transform candidate = transform;
+            while (candidate != null)
+            {
+                string objectName = candidate.name;
+                if (objectName.IndexOf("Window", System.StringComparison.OrdinalIgnoreCase) >= 0 ||
+                    objectName.IndexOf("Glass", System.StringComparison.OrdinalIgnoreCase) >= 0)
+                {
+                    return true;
+                }
+
+                if (objectName == "Building")
+                    break;
+
+                candidate = candidate.parent;
+            }
+
+            return false;
         }
 
         private static void AddUniqueRenderers(Transform root, List<Renderer> destination)
@@ -724,26 +945,43 @@ namespace DigitalTwin.View
         }
 
         private static int RemoveLongHorizontalStructureLines(
-            Renderer[] structureRenderers,
+            Scene scene,
             Bounds lineBounds)
         {
             int removedCount = 0;
             float minimumLineWidth = lineBounds.size.x * 0.50f;
+            float minimumLineDepth = lineBounds.size.z * 0.50f;
+            Renderer[] sceneRenderers = FindObjectsByType<Renderer>(FindObjectsInactive.Include);
 
-            foreach (Renderer renderer in structureRenderers)
+            foreach (Renderer renderer in sceneRenderers)
             {
                 if (renderer == null || !renderer.enabled ||
+                    renderer.gameObject.scene != scene ||
+                    renderer.gameObject.layer == PreviewLayer ||
                     IsCeilingSurfaceRenderer(renderer, null))
                 {
                     continue;
                 }
 
                 Bounds bounds = renderer.bounds;
-                float crossSection = Mathf.Max(0.01f, Mathf.Max(bounds.size.y, bounds.size.z));
-                bool spansFactoryHorizontally = bounds.size.x >= minimumLineWidth;
-                bool isThinLongShape = bounds.size.x >= crossSection * 10f;
+                if (!IsFinite(bounds.center) || !IsFinite(bounds.extents))
+                    continue;
 
-                if (!spansFactoryHorizontally || !isThinLongShape)
+                bool runsAlongX = bounds.size.x >= bounds.size.z;
+                float length = runsAlongX ? bounds.size.x : bounds.size.z;
+                float horizontalThickness = runsAlongX ? bounds.size.z : bounds.size.x;
+                float crossSection = Mathf.Max(
+                    0.01f,
+                    Mathf.Max(bounds.size.y, horizontalThickness));
+                bool spansFactory = runsAlongX
+                    ? bounds.size.x >= minimumLineWidth
+                    : bounds.size.z >= minimumLineDepth;
+                bool isThinLongShape = length >= crossSection * FloatingBeamAspectRatio;
+                bool isElevatedFloatingBeam =
+                    bounds.center.y >= FloatingBeamMinimumHeight &&
+                    length >= FloatingBeamMinimumLength;
+
+                if (!isThinLongShape || (!spansFactory && !isElevatedFloatingBeam))
                     continue;
 
                 renderer.enabled = false;

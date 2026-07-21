@@ -29,6 +29,7 @@ namespace DigitalTwin.Line11
         [SerializeField] private string brokerAddress = DefaultBrokerAddress;
         [SerializeField] private int brokerPort = DefaultBrokerPort;
         [SerializeField] private string topic = DefaultTopic;
+        [SerializeField, Min(0.5f)] private float noDataTimeoutSeconds = 3f;
 
         private readonly ConcurrentQueue<string> receivedMessages = new ConcurrentQueue<string>();
         private readonly ConcurrentQueue<string> connectionLogs = new ConcurrentQueue<string>();
@@ -36,6 +37,8 @@ namespace DigitalTwin.Line11
         private TcpClient activeClient;
         private volatile bool stopping;
         private bool initializedLiveCounters;
+        private bool showingNoDataState;
+        private Line11PressDetailController noDataController;
 
         public bool IsConnected { get; private set; }
         public DateTime LastMessageTime { get; private set; }
@@ -89,6 +92,8 @@ namespace DigitalTwin.Line11
                 processed++;
                 ApplySolverState(json);
             }
+
+            ApplyNoDataStateWhenRequired();
         }
 
         private void OnDestroy()
@@ -338,7 +343,7 @@ namespace DigitalTwin.Line11
                     Mathf.Max(aLineVelocity, bLineVelocity),
                     loadPressure);
 
-                float temperature = ReadFloat(input, "Fluid.temperature_c", 44.2f);
+                float temperature = ReadFloat(input, "Fluid.temperature_c", 0f);
                 float pumpRpm = ReadFloat(
                     result,
                     "pump_rpm",
@@ -356,17 +361,56 @@ namespace DigitalTwin.Line11
                 controller.SetPressureTargets(targetPressure, reliefSetPressure);
                 controller.SetReliefValveOpen(reliefOpen);
 
-                bool solverWarning = ReadBool(result, "solver_warning") ||
-                    ReadBool(result, "contains_inf_or_nan") ||
+                bool criticalSolverState = ReadBool(result, "contains_inf_or_nan") ||
                     !string.Equals(ReadString(result, "status"), "ok", StringComparison.OrdinalIgnoreCase);
+                bool solverWarning = ReadBool(result, "solver_warning") || criticalSolverState;
                 controller.SetSolverWarning(solverWarning);
+                SetLine11FactoryStatus(
+                    criticalSolverState
+                        ? DigitalTwin.View.FactoryTopViewCamera.FactoryStatus.Critical
+                        : solverWarning
+                            ? DigitalTwin.View.FactoryTopViewCamera.FactoryStatus.Caution
+                            : DigitalTwin.View.FactoryTopViewCamera.FactoryStatus.Normal);
 
+                controller.SetLiveDataAvailable(true);
                 LastMessageTime = DateTime.Now;
+                showingNoDataState = false;
+                noDataController = null;
             }
             catch (Exception exception)
             {
                 Debug.LogWarning("[Line11 MQTT] 메시지 처리 실패: " + exception.Message);
             }
+        }
+
+        private void ApplyNoDataStateWhenRequired()
+        {
+            Line11PressDetailController controller = Line11PressDetailController.Instance;
+            if (controller == null)
+                return;
+
+            bool hasNeverReceivedData = LastMessageTime == default;
+            bool dataIsStale = !hasNeverReceivedData &&
+                (DateTime.Now - LastMessageTime).TotalSeconds >= noDataTimeoutSeconds;
+            if (!hasNeverReceivedData && !dataIsStale)
+                return;
+
+            if (showingNoDataState && noDataController == controller)
+                return;
+
+            controller.SetAllLiveValuesToZero();
+            SetLine11FactoryStatus(DigitalTwin.View.FactoryTopViewCamera.FactoryStatus.Caution);
+            showingNoDataState = true;
+            noDataController = controller;
+        }
+
+        private static void SetLine11FactoryStatus(
+            DigitalTwin.View.FactoryTopViewCamera.FactoryStatus status)
+        {
+            DigitalTwin.View.FactoryTopViewCamera topView =
+                FindAnyObjectByType<DigitalTwin.View.FactoryTopViewCamera>();
+            if (topView != null)
+                topView.SetLineStatus(11, status);
         }
 
         private static float ActivePathFlow(float systemFlow, float pathVelocity)

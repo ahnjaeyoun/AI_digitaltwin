@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using UnityEngine;
 using UnityEngine.EventSystems;
 using UnityEngine.SceneManagement;
@@ -38,6 +39,33 @@ namespace DigitalTwin.Line11
             }
         }
 
+        private sealed class NormalCycleSample
+        {
+            public string Phase;
+            public string ActiveMode;
+            public float TargetPressure;
+            public float LoadPressure;
+            public float PumpRpm;
+            public float OilTemperature;
+            public float ReliefSetPressure;
+            public float Flow;
+            public float SuctionVelocity;
+            public float PressureVelocity;
+            public float ValvePaVelocity;
+            public float ValvePbVelocity;
+            public float ValveAtVelocity;
+            public float ValveBtVelocity;
+            public float ReturnVelocity;
+            public float ReliefVelocity;
+            public float PumpInPressure;
+            public float PumpOutPressure;
+            public float ValvePPressure;
+            public float ValveAPressure;
+            public float ValveBPressure;
+            public float ValveTPressure;
+            public bool ReliefOpen;
+        }
+
         private static readonly Color CanvasClear = new Color(0f, 0f, 0f, 0f);
         private static readonly Color SidebarColor = new Color32(20, 24, 29, 238);
         private static readonly Color PanelColor = new Color32(25, 29, 34, 250);
@@ -50,6 +78,8 @@ namespace DigitalTwin.Line11
         private static readonly Color SuccessColor = new Color32(71, 190, 133, 255);
 
         private readonly List<HydraulicMetric> metrics = new List<HydraulicMetric>();
+        private readonly List<NormalCycleSample> normalCycleSamples =
+            new List<NormalCycleSample>();
         private readonly Dictionary<string, Text[]> valueLabels =
             new Dictionary<string, Text[]>(StringComparer.OrdinalIgnoreCase);
 
@@ -60,11 +90,17 @@ namespace DigitalTwin.Line11
         private Font uiFont;
         private bool initialized;
         private bool detailOpen;
+        private bool simulatedLineActive;
+        private int displayedLineNumber = 11;
+        private float simulatedCycleEpochTime;
+        private int lastSimulatedSampleIndex = -1;
         private bool guiStylesReady;
         private bool guiRenderedLogged;
         private Rect sidebarGuiRect;
         private Rect line11ButtonGuiRect;
         private Rect detailGuiRect;
+        private Vector2 detailLineScrollPosition;
+        private DigitalTwin.View.FactoryTopViewCamera topViewController;
         private GUIStyle smallHeaderStyle;
         private GUIStyle titleStyle;
         private GUIStyle subtitleStyle;
@@ -78,9 +114,19 @@ namespace DigitalTwin.Line11
         private GUIStyle bodyStyle;
         private GUIStyle pipeButtonStyle;
         private GUIStyle operatingStatusStyle;
+        private GUIStyle detailNavigationButtonStyle;
+        private GUIStyle selectedDetailNavigationButtonStyle;
+        private GUIStyle detailNavigationLabelStyle;
+        private GUIStyle detailNavigationStatusStyle;
         private Texture2D buttonNormalTexture;
         private Texture2D buttonHoverTexture;
         private Texture2D buttonActiveTexture;
+        private Texture2D detailNavigationRowTexture;
+        private Texture2D detailNavigationHoverTexture;
+        private Texture2D detailNavigationSelectedTexture;
+        private Texture2D normalStatusTexture;
+        private Texture2D cautionStatusTexture;
+        private Texture2D criticalStatusTexture;
         private readonly float[] flowHistory = new float[24];
         private readonly float[] velocityHistory = new float[24];
         private readonly float[] pressureHistory = new float[24];
@@ -88,6 +134,7 @@ namespace DigitalTwin.Line11
         private int selectedPipeIndex;
         private int warningAlarmCount = 2;
         private bool solverWarningWasActive;
+        private bool liveDataAvailable;
         private int reliefValveOpenCount;
         private bool reliefValveWasOpen;
         private float oilTemperatureC = 44.2f;
@@ -98,6 +145,7 @@ namespace DigitalTwin.Line11
         [SerializeField, Min(1f)] private float pressCylinderBoreDiameterMm = 100f;
         [SerializeField, Range(0f, 1f)] private float hydraulicEfficiency = 0.95f;
         [SerializeField, Min(1)] private int pressCylinderCount = 1;
+        [SerializeField] private TextAsset normalCycleCsv;
         private readonly DateTime[] alertTimestamps = new DateTime[3];
         private Vector2 metricsScrollPosition;
         private Camera assetPreviewCamera;
@@ -145,12 +193,14 @@ namespace DigitalTwin.Line11
 
             initialized = true;
             Instance = this;
+            simulatedCycleEpochTime = Time.unscaledTime;
             sceneCamera = Camera.main;
 
             if (sceneCamera == null)
                 sceneCamera = FindAnyObjectByType<Camera>();
 
             CreateDefaultMetrics();
+            LoadNormalCycleSamples();
             InitializeRealtimeHistory();
             InitializeAlertTimestamps();
             uiFont = CreateFont();
@@ -260,6 +310,43 @@ namespace DigitalTwin.Line11
         }
 
         /// <summary>
+        /// Marks whether the dashboard is currently receiving valid live data.
+        /// </summary>
+        public void SetLiveDataAvailable(bool isAvailable)
+        {
+            liveDataAvailable = isAvailable;
+        }
+
+        /// <summary>
+        /// Clears every value populated by the live Solver/MQTT feed.
+        /// </summary>
+        public void SetAllLiveValuesToZero()
+        {
+            liveDataAvailable = false;
+
+            foreach (HydraulicMetric metric in metrics)
+            {
+                metric.FlowRate = 0f;
+                metric.Velocity = 0f;
+                metric.Pressure = 0f;
+                RefreshMetric(metric);
+            }
+
+            oilTemperatureC = 0f;
+            pumpRpm = 0f;
+            targetPressureBar = 0f;
+            reliefSetPressureBar = 0f;
+            solverWarningWasActive = false;
+            reliefValveWasOpen = false;
+            warningAlarmCount = 0;
+            reliefValveOpenCount = 0;
+
+            Array.Clear(flowHistory, 0, flowHistory.Length);
+            Array.Clear(velocityHistory, 0, velocityHistory.Length);
+            Array.Clear(pressureHistory, 0, pressureHistory.Length);
+        }
+
+        /// <summary>
         /// Updates the hydraulic-cylinder specification used for the live press-force calculation.
         /// </summary>
         public void SetPressCylinderSpecification(float boreDiameterMm, float efficiency, int cylinderCount = 1)
@@ -271,12 +358,35 @@ namespace DigitalTwin.Line11
 
         public void OpenDetail()
         {
+            bool wasShowingSimulation = simulatedLineActive;
+            displayedLineNumber = 11;
+            simulatedLineActive = false;
+            if (wasShowingSimulation)
+                SetAllLiveValuesToZero();
+
+            detailOpen = true;
+        }
+
+        public void OpenLineDetail(int lineNumber)
+        {
+            displayedLineNumber = Mathf.Clamp(lineNumber, 1, 16);
+            if (displayedLineNumber == 11)
+            {
+                OpenDetail();
+                return;
+            }
+
+            simulatedLineActive = true;
+            lastSimulatedSampleIndex = -1;
+            SetAllLiveValuesToZero();
+            UpdateSimulatedNormalCycle(true);
             detailOpen = true;
         }
 
         public void CloseDetail()
         {
             detailOpen = false;
+            simulatedLineActive = false;
         }
 
         private void OnDestroy()
@@ -290,6 +400,18 @@ namespace DigitalTwin.Line11
                 Destroy(buttonHoverTexture);
             if (buttonActiveTexture != null)
                 Destroy(buttonActiveTexture);
+            if (detailNavigationRowTexture != null)
+                Destroy(detailNavigationRowTexture);
+            if (detailNavigationHoverTexture != null)
+                Destroy(detailNavigationHoverTexture);
+            if (detailNavigationSelectedTexture != null)
+                Destroy(detailNavigationSelectedTexture);
+            if (normalStatusTexture != null)
+                Destroy(normalStatusTexture);
+            if (cautionStatusTexture != null)
+                Destroy(cautionStatusTexture);
+            if (criticalStatusTexture != null)
+                Destroy(criticalStatusTexture);
 
             if (sceneCameraMaskModified && sceneCamera != null)
                 sceneCamera.cullingMask = originalSceneCameraCullingMask;
@@ -313,6 +435,7 @@ namespace DigitalTwin.Line11
             if (line11Root == null && Time.frameCount % 30 == 0)
                 TryBindLine11();
 
+            UpdateSimulatedNormalCycle(false);
             UpdateRealtimeHistory();
             UpdateAssetPreviewAnimation();
 
@@ -393,6 +516,12 @@ namespace DigitalTwin.Line11
 
         private void DrawSidebarGui()
         {
+            if (detailOpen)
+            {
+                sidebarGuiRect = Rect.zero;
+                return;
+            }
+
             // The overview scene provides navigation for all 16 lines. Once the Line11 detail
             // view opens, this compact sidebar returns so the existing detail workflow is kept.
             if (!detailOpen && SceneManager.GetActiveScene().name == "FactoryTopView")
@@ -413,7 +542,7 @@ namespace DigitalTwin.Line11
             line11ButtonGuiRect = new Rect(6f, 68f, sidebarWidth - 12f, 50f);
             if (GUI.Button(
                     line11ButtonGuiRect,
-                    detailOpen ? "L11" : "라인11",
+                    detailOpen ? $"L{displayedLineNumber:00}" : "라인11",
                     lineButtonStyle))
             {
                 OpenDetail();
@@ -428,18 +557,131 @@ namespace DigitalTwin.Line11
             }
         }
 
+        private void DrawDetailLineNavigation(Rect panel)
+        {
+            DrawColorRect(panel, new Color32(10, 19, 39, 255));
+            if (topViewController == null)
+                topViewController = FindAnyObjectByType<DigitalTwin.View.FactoryTopViewCamera>();
+
+            DigitalTwin.View.FactoryTopViewCamera.FactoryStatus factoryStatus =
+                topViewController != null
+                    ? topViewController.GetFactoryStatus()
+                    : DigitalTwin.View.FactoryTopViewCamera.FactoryStatus.Normal;
+
+            GUI.Label(new Rect(14f, 10f, panel.width - 28f, 30f),
+                "공장 라인 모니터링", smallHeaderStyle);
+
+            Rect factoryCard = new Rect(10f, 45f, panel.width - 20f, 56f);
+            DrawColorRect(factoryCard, new Color32(19, 35, 60, 255));
+            GUI.DrawTexture(
+                new Rect(factoryCard.x + 12f, factoryCard.y + 15f, 26f, 26f),
+                GetDetailStatusTexture(factoryStatus),
+                ScaleMode.ScaleToFit,
+                true);
+            GUI.Label(new Rect(factoryCard.x + 48f, factoryCard.y + 4f, 120f, 22f),
+                "공장 상태", detailNavigationLabelStyle);
+            detailNavigationStatusStyle.normal.textColor = GetDetailStatusColor(factoryStatus);
+            GUI.Label(new Rect(factoryCard.x + 48f, factoryCard.y + 25f, 120f, 25f),
+                GetDetailStatusText(factoryStatus), detailNavigationStatusStyle);
+
+            DrawDetailStatusLegend(new Rect(10f, 107f, panel.width - 20f, 25f));
+
+            Rect allButton = new Rect(10f, 137f, panel.width - 20f, 38f);
+            if (GUI.Button(allButton, "전체 라인 보기", detailNavigationButtonStyle))
+            {
+                CloseDetail();
+                if (topViewController != null)
+                    topViewController.SelectLine(0);
+                return;
+            }
+
+            Rect viewport = new Rect(8f, 183f, panel.width - 12f,
+                Mathf.Max(40f, panel.height - 191f));
+            const float rowHeight = 38f;
+            const float rowGap = 4f;
+            const int lineCount = 16;
+            float contentHeight = lineCount * (rowHeight + rowGap) - rowGap;
+            Rect content = new Rect(0f, 0f, viewport.width - 18f, contentHeight);
+            detailLineScrollPosition = GUI.BeginScrollView(
+                viewport,
+                detailLineScrollPosition,
+                content,
+                false,
+                false);
+
+            float y = 0f;
+            for (int lineNumber = 1; lineNumber <= lineCount; lineNumber++)
+            {
+                DigitalTwin.View.FactoryTopViewCamera.FactoryStatus status =
+                    topViewController != null
+                        ? topViewController.GetLineStatus(lineNumber)
+                        : DigitalTwin.View.FactoryTopViewCamera.FactoryStatus.Normal;
+                Rect row = new Rect(0f, y, content.width, rowHeight);
+                GUIStyle rowStyle = displayedLineNumber == lineNumber
+                    ? selectedDetailNavigationButtonStyle
+                    : detailNavigationButtonStyle;
+
+                if (GUI.Button(row, $"라인 {lineNumber:00}", rowStyle))
+                {
+                    if (topViewController != null)
+                        topViewController.SelectLine(lineNumber);
+                    else if (lineNumber == 11)
+                        OpenDetail();
+                    else
+                        OpenLineDetail(lineNumber);
+                }
+
+                GUI.DrawTexture(
+                    new Rect(row.xMax - 67f, row.y + 11f, 16f, 16f),
+                    GetDetailStatusTexture(status),
+                    ScaleMode.ScaleToFit,
+                    true);
+                detailNavigationStatusStyle.normal.textColor = GetDetailStatusColor(status);
+                GUI.Label(new Rect(row.xMax - 47f, row.y + 7f, 42f, 24f),
+                    GetDetailStatusText(status), detailNavigationStatusStyle);
+                y += rowHeight + rowGap;
+            }
+
+            GUI.EndScrollView();
+        }
+
+        private void DrawDetailStatusLegend(Rect rect)
+        {
+            DigitalTwin.View.FactoryTopViewCamera.FactoryStatus[] statuses =
+            {
+                DigitalTwin.View.FactoryTopViewCamera.FactoryStatus.Normal,
+                DigitalTwin.View.FactoryTopViewCamera.FactoryStatus.Caution,
+                DigitalTwin.View.FactoryTopViewCamera.FactoryStatus.Critical
+            };
+            float itemWidth = rect.width / statuses.Length;
+            for (int index = 0; index < statuses.Length; index++)
+            {
+                Rect item = new Rect(rect.x + itemWidth * index, rect.y, itemWidth, rect.height);
+                GUI.DrawTexture(new Rect(item.x + 2f, item.y + 6f, 12f, 12f),
+                    GetDetailStatusTexture(statuses[index]), ScaleMode.ScaleToFit, true);
+                GUI.Label(new Rect(item.x + 17f, item.y, item.width - 17f, item.height),
+                    GetDetailStatusText(statuses[index]), detailNavigationLabelStyle);
+            }
+        }
+
         private void DrawDetailGui()
         {
             detailGuiRect = new Rect(0f, 0f, Screen.width, Screen.height);
             DrawColorRect(detailGuiRect, new Color32(20, 23, 26, 255));
 
-            const float navWidth = 54f;
+            const float navWidth = 210f;
             const float topBarHeight = 46f;
+            DrawDetailLineNavigation(new Rect(0f, 0f, navWidth, Screen.height));
+            if (!detailOpen)
+                return;
+
             DrawColorRect(new Rect(navWidth, 0f, Screen.width - navWidth, topBarHeight), HeaderColor);
 
             GUI.Label(
                 new Rect(navWidth + 14f, 5f, 380f, 34f),
-                "<  LINE11 유압 프레스",
+                simulatedLineActive
+                    ? $"<  LINE {displayedLineNumber:00}  정상 사이클"
+                    : "<  LINE11 유압 프레스",
                 smallHeaderStyle);
             GUI.Label(
                 new Rect(Screen.width - 210f, 5f, 140f, 34f),
@@ -608,11 +850,42 @@ namespace DigitalTwin.Line11
             DrawColorRect(new Rect(rect.x, rect.yMax - 3f, rect.width, 3f), accent);
         }
 
-        private static void GetPressCycleState(
+        private void GetPressCycleState(
             out float strokeNormalized,
             out string stage,
             out float cyclePhase)
         {
+            if (simulatedLineActive && normalCycleSamples.Count > 0)
+            {
+                float elapsed = GetSimulatedCycleElapsed();
+                int sampleIndex = Mathf.FloorToInt(elapsed) % normalCycleSamples.Count;
+                NormalCycleSample sample = normalCycleSamples[sampleIndex];
+                cyclePhase = sampleIndex / (float)normalCycleSamples.Count;
+
+                if (sample.ActiveMode == "downstroke")
+                {
+                    stage = sample.Phase;
+                    int downstrokeCount = CountCycleModeSamples("downstroke");
+                    strokeNormalized = Mathf.Clamp01((sampleIndex + 1f) / Mathf.Max(1, downstrokeCount));
+                }
+                else if (sample.ActiveMode == "upstroke")
+                {
+                    stage = sample.Phase;
+                    int firstUpstroke = FindFirstCycleModeSample("upstroke");
+                    int upstrokeCount = CountCycleModeSamples("upstroke");
+                    int upstrokeIndex = Mathf.Max(0, sampleIndex - firstUpstroke);
+                    strokeNormalized = 1f - Mathf.Clamp01(
+                        (upstrokeIndex + 1f) / Mathf.Max(1, upstrokeCount));
+                }
+                else
+                {
+                    stage = sample.Phase;
+                    strokeNormalized = 1f;
+                }
+
+                return;
+            }
+
             cyclePhase = Mathf.Repeat(Time.unscaledTime / 8f, 1f);
 
             if (cyclePhase < 0.15f)
@@ -635,6 +908,91 @@ namespace DigitalTwin.Line11
                 stage = "복귀 중";
                 strokeNormalized = 1f - Mathf.InverseLerp(0.70f, 1f, cyclePhase);
             }
+        }
+
+        private void UpdateSimulatedNormalCycle(bool forceUpdate)
+        {
+            if (!simulatedLineActive || normalCycleSamples.Count == 0)
+                return;
+
+            float elapsed = GetSimulatedCycleElapsed();
+            int sampleIndex = Mathf.FloorToInt(elapsed) % normalCycleSamples.Count;
+            if (!forceUpdate && sampleIndex == lastSimulatedSampleIndex)
+                return;
+
+            lastSimulatedSampleIndex = sampleIndex;
+            NormalCycleSample sample = normalCycleSamples[sampleIndex];
+            float cylinderVelocity = Mathf.Max(
+                Mathf.Max(sample.ValvePaVelocity, sample.ValvePbVelocity),
+                Mathf.Max(sample.ValveAtVelocity, sample.ValveBtVelocity));
+
+            SetMetric("pipe-pump-tank", sample.Flow, sample.SuctionVelocity,
+                sample.PumpInPressure);
+            SetMetric("pipe-pump-valve", sample.Flow, sample.PressureVelocity,
+                sample.ValvePPressure);
+            SetMetric("pipe-valve-tank-return", sample.Flow, sample.ReturnVelocity,
+                sample.ValveTPressure);
+            SetMetric("pipe-valve-tank-relief", sample.ReliefOpen ? sample.Flow : 0f,
+                sample.ReliefVelocity, sample.ValvePPressure);
+            SetMetric("motor", sample.Flow, sample.PressureVelocity,
+                sample.PumpOutPressure);
+            SetMetric("valve-pa", ActiveSimulatedPathFlow(sample.Flow, sample.ValvePaVelocity),
+                sample.ValvePaVelocity, sample.ValvePPressure);
+            SetMetric("valve-bt", ActiveSimulatedPathFlow(sample.Flow, sample.ValveBtVelocity),
+                sample.ValveBtVelocity, sample.ValveBPressure);
+            SetMetric("valve-pb", ActiveSimulatedPathFlow(sample.Flow, sample.ValvePbVelocity),
+                sample.ValvePbVelocity, sample.ValvePPressure);
+            SetMetric("valve-at", ActiveSimulatedPathFlow(sample.Flow, sample.ValveAtVelocity),
+                sample.ValveAtVelocity, sample.ValveAPressure);
+            SetMetric("relief-valve", sample.ReliefOpen ? sample.Flow : 0f,
+                sample.ReliefVelocity, sample.ValvePPressure);
+            SetMetric("cylinder", cylinderVelocity > 0f ? sample.Flow : 0f,
+                cylinderVelocity, sample.LoadPressure);
+
+            SetOperatingMeasurements(sample.OilTemperature, sample.PumpRpm);
+            SetPressureTargets(sample.TargetPressure, sample.ReliefSetPressure);
+            SetSolverWarning(false);
+            SetReliefValveOpen(sample.ReliefOpen);
+            SetLiveDataAvailable(true);
+            AppendCurrentMetricToHistory();
+        }
+
+        private static float ActiveSimulatedPathFlow(float flow, float velocity)
+        {
+            return velocity > 0.0001f ? flow : 0f;
+        }
+
+        private float GetSimulatedCycleElapsed()
+        {
+            return Mathf.Max(0f, Time.unscaledTime - simulatedCycleEpochTime);
+        }
+
+        private int CountCycleModeSamples(string activeMode)
+        {
+            int count = 0;
+            foreach (NormalCycleSample sample in normalCycleSamples)
+            {
+                if (string.Equals(sample.ActiveMode, activeMode, StringComparison.OrdinalIgnoreCase))
+                    count++;
+            }
+
+            return count;
+        }
+
+        private int FindFirstCycleModeSample(string activeMode)
+        {
+            for (int index = 0; index < normalCycleSamples.Count; index++)
+            {
+                if (string.Equals(
+                        normalCycleSamples[index].ActiveMode,
+                        activeMode,
+                        StringComparison.OrdinalIgnoreCase))
+                {
+                    return index;
+                }
+            }
+
+            return 0;
         }
 
         private void DrawSchematicAndMetrics(Rect panel)
@@ -981,6 +1339,12 @@ namespace DigitalTwin.Line11
 
         private void UpdateRealtimeHistory()
         {
+            if (!liveDataAvailable)
+                return;
+
+            if (simulatedLineActive)
+                return;
+
             if (Time.unscaledTime - lastHistoryUpdate < 0.65f || metrics.Count == 0)
                 return;
 
@@ -1000,6 +1364,21 @@ namespace DigitalTwin.Line11
                 Mathf.Max(0f, selectedPipe.Velocity + noise * Mathf.Max(0.12f, selectedPipe.Velocity * 0.14f));
             pressureHistory[pressureHistory.Length - 1] =
                 Mathf.Max(0f, selectedPipe.Pressure + noise * Mathf.Max(2f, selectedPipe.Pressure * 0.08f));
+        }
+
+        private void AppendCurrentMetricToHistory()
+        {
+            HydraulicMetric selectedPipe = GetSelectedPipeMetric();
+            if (selectedPipe == null)
+                return;
+
+            ShiftHistory(flowHistory);
+            ShiftHistory(velocityHistory);
+            ShiftHistory(pressureHistory);
+            flowHistory[flowHistory.Length - 1] = selectedPipe.FlowRate;
+            velocityHistory[velocityHistory.Length - 1] = selectedPipe.Velocity;
+            pressureHistory[pressureHistory.Length - 1] = selectedPipe.Pressure;
+            lastHistoryUpdate = Time.unscaledTime;
         }
 
         private HydraulicMetric GetSelectedPipeMetric()
@@ -1035,13 +1414,23 @@ namespace DigitalTwin.Line11
             // Serialized runtime instances can survive a script hot reload with the old
             // ready flag but without styles that were added in the new script version.
             if (guiStylesReady && smallHeaderStyle != null && lineButtonStyle != null &&
-                closeButtonStyle != null && pipeButtonStyle != null && operatingStatusStyle != null)
+                closeButtonStyle != null && pipeButtonStyle != null && operatingStatusStyle != null &&
+                detailNavigationButtonStyle != null && normalStatusTexture != null)
                 return;
 
             guiStylesReady = true;
             buttonNormalTexture = CreateColorTexture(AccentColor);
             buttonHoverTexture = CreateColorTexture(new Color32(39, 178, 217, 255));
             buttonActiveTexture = CreateColorTexture(new Color32(18, 124, 160, 255));
+            detailNavigationRowTexture = CreateColorTexture(new Color32(19, 35, 60, 255));
+            detailNavigationHoverTexture = CreateColorTexture(new Color32(24, 67, 96, 255));
+            detailNavigationSelectedTexture = CreateColorTexture(new Color32(19, 82, 113, 255));
+            normalStatusTexture = CreateCircleTexture(
+                GetDetailStatusColor(DigitalTwin.View.FactoryTopViewCamera.FactoryStatus.Normal));
+            cautionStatusTexture = CreateCircleTexture(
+                GetDetailStatusColor(DigitalTwin.View.FactoryTopViewCamera.FactoryStatus.Caution));
+            criticalStatusTexture = CreateCircleTexture(
+                GetDetailStatusColor(DigitalTwin.View.FactoryTopViewCamera.FactoryStatus.Critical));
 
             smallHeaderStyle = CreateGuiLabelStyle(14, FontStyle.Bold, TextColor, TextAnchor.MiddleLeft);
             titleStyle = CreateGuiLabelStyle(25, FontStyle.Bold, TextColor, TextAnchor.MiddleLeft);
@@ -1072,6 +1461,28 @@ namespace DigitalTwin.Line11
             lineButtonStyle.normal.textColor = Color.white;
             lineButtonStyle.hover.textColor = Color.white;
             lineButtonStyle.active.textColor = Color.white;
+
+            detailNavigationButtonStyle = new GUIStyle(GUI.skin.button)
+            {
+                font = uiFont,
+                fontSize = 14,
+                fontStyle = FontStyle.Bold,
+                alignment = TextAnchor.MiddleLeft,
+                padding = new RectOffset(12, 70, 0, 0)
+            };
+            detailNavigationButtonStyle.normal.background = detailNavigationRowTexture;
+            detailNavigationButtonStyle.hover.background = detailNavigationHoverTexture;
+            detailNavigationButtonStyle.active.background = detailNavigationSelectedTexture;
+            detailNavigationButtonStyle.normal.textColor = TextColor;
+            detailNavigationButtonStyle.hover.textColor = Color.white;
+            detailNavigationButtonStyle.active.textColor = Color.white;
+
+            selectedDetailNavigationButtonStyle = new GUIStyle(detailNavigationButtonStyle);
+            selectedDetailNavigationButtonStyle.normal.background = detailNavigationSelectedTexture;
+            detailNavigationLabelStyle = CreateGuiLabelStyle(
+                11, FontStyle.Normal, MutedTextColor, TextAnchor.MiddleLeft);
+            detailNavigationStatusStyle = CreateGuiLabelStyle(
+                12, FontStyle.Bold, SuccessColor, TextAnchor.MiddleLeft);
 
             closeButtonStyle = new GUIStyle(lineButtonStyle)
             {
@@ -1128,6 +1539,74 @@ namespace DigitalTwin.Line11
             texture.SetPixel(0, 0, color);
             texture.Apply();
             return texture;
+        }
+
+        private static Texture2D CreateCircleTexture(Color color)
+        {
+            const int size = 32;
+            Texture2D texture = new Texture2D(size, size, TextureFormat.RGBA32, false)
+            {
+                hideFlags = HideFlags.HideAndDontSave,
+                filterMode = FilterMode.Bilinear,
+                wrapMode = TextureWrapMode.Clamp
+            };
+            Vector2 center = new Vector2((size - 1) * 0.5f, (size - 1) * 0.5f);
+            float radius = size * 0.40f;
+            for (int y = 0; y < size; y++)
+            {
+                for (int x = 0; x < size; x++)
+                {
+                    float distance = Vector2.Distance(new Vector2(x, y), center);
+                    float alpha = Mathf.Clamp01(radius - distance + 1f);
+                    texture.SetPixel(x, y,
+                        new Color(color.r, color.g, color.b, color.a * alpha));
+                }
+            }
+
+            texture.Apply();
+            return texture;
+        }
+
+        private Texture2D GetDetailStatusTexture(
+            DigitalTwin.View.FactoryTopViewCamera.FactoryStatus status)
+        {
+            switch (status)
+            {
+                case DigitalTwin.View.FactoryTopViewCamera.FactoryStatus.Critical:
+                    return criticalStatusTexture;
+                case DigitalTwin.View.FactoryTopViewCamera.FactoryStatus.Caution:
+                    return cautionStatusTexture;
+                default:
+                    return normalStatusTexture;
+            }
+        }
+
+        private static Color GetDetailStatusColor(
+            DigitalTwin.View.FactoryTopViewCamera.FactoryStatus status)
+        {
+            switch (status)
+            {
+                case DigitalTwin.View.FactoryTopViewCamera.FactoryStatus.Critical:
+                    return new Color32(235, 77, 77, 255);
+                case DigitalTwin.View.FactoryTopViewCamera.FactoryStatus.Caution:
+                    return new Color32(238, 159, 56, 255);
+                default:
+                    return new Color32(64, 210, 137, 255);
+            }
+        }
+
+        private static string GetDetailStatusText(
+            DigitalTwin.View.FactoryTopViewCamera.FactoryStatus status)
+        {
+            switch (status)
+            {
+                case DigitalTwin.View.FactoryTopViewCamera.FactoryStatus.Critical:
+                    return "치명";
+                case DigitalTwin.View.FactoryTopViewCamera.FactoryStatus.Caution:
+                    return "주의";
+                default:
+                    return "정상";
+            }
         }
 
         private void PrepareFrameClickTarget()
@@ -1285,6 +1764,85 @@ namespace DigitalTwin.Line11
                 shaftRetractedPosition,
                 shaftPressedPosition,
                 easedStroke);
+        }
+
+        private void LoadNormalCycleSamples()
+        {
+            normalCycleSamples.Clear();
+            TextAsset source = normalCycleCsv != null
+                ? normalCycleCsv
+                : Resources.Load<TextAsset>("LineNormalCycle");
+            if (source == null)
+            {
+                Debug.LogWarning("[Line UI] Resources/LineNormalCycle.csv was not found.");
+                return;
+            }
+
+            string[] lines = source.text.Split(new[] { '\r', '\n' },
+                StringSplitOptions.RemoveEmptyEntries);
+            for (int lineIndex = 1; lineIndex < lines.Length; lineIndex++)
+            {
+                string[] values = lines[lineIndex].Split(',');
+                if (values.Length < 24)
+                {
+                    Debug.LogWarning($"[Line UI] Invalid normal-cycle CSV row: {lineIndex + 1}");
+                    continue;
+                }
+
+                normalCycleSamples.Add(new NormalCycleSample
+                {
+                    Phase = CleanCsvValue(values[1]),
+                    ActiveMode = CleanCsvValue(values[2]),
+                    TargetPressure = ParseCsvFloat(values[3]),
+                    LoadPressure = ParseCsvFloat(values[4]),
+                    PumpRpm = ParseCsvFloat(values[5]),
+                    OilTemperature = ParseCsvFloat(values[6]),
+                    ReliefSetPressure = ParseCsvFloat(values[7]),
+                    Flow = ParseCsvFloat(values[8]),
+                    SuctionVelocity = ParseCsvFloat(values[9]),
+                    PressureVelocity = ParseCsvFloat(values[10]),
+                    ValvePaVelocity = ParseCsvFloat(values[11]),
+                    ValvePbVelocity = ParseCsvFloat(values[12]),
+                    ValveAtVelocity = ParseCsvFloat(values[13]),
+                    ValveBtVelocity = ParseCsvFloat(values[14]),
+                    ReturnVelocity = ParseCsvFloat(values[15]),
+                    ReliefVelocity = ParseCsvFloat(values[16]),
+                    PumpInPressure = ParseCsvFloat(values[17]),
+                    PumpOutPressure = ParseCsvFloat(values[18]),
+                    ValvePPressure = ParseCsvFloat(values[19]),
+                    ValveAPressure = ParseCsvFloat(values[20]),
+                    ValveBPressure = ParseCsvFloat(values[21]),
+                    ValveTPressure = ParseCsvFloat(values[22]),
+                    ReliefOpen = ParseCsvBool(values[23])
+                });
+            }
+
+            Debug.Log($"[Line UI] Loaded {normalCycleSamples.Count} one-second normal-cycle CSV samples.");
+        }
+
+        private static float ParseCsvFloat(string value)
+        {
+            return float.TryParse(
+                CleanCsvValue(value),
+                NumberStyles.Float,
+                CultureInfo.InvariantCulture,
+                out float result)
+                ? result
+                : 0f;
+        }
+
+        private static bool ParseCsvBool(string value)
+        {
+            string cleaned = CleanCsvValue(value);
+            return cleaned.Equals("true", StringComparison.OrdinalIgnoreCase) ||
+                cleaned.Equals("yes", StringComparison.OrdinalIgnoreCase) ||
+                cleaned.Equals("open", StringComparison.OrdinalIgnoreCase) ||
+                cleaned == "1";
+        }
+
+        private static string CleanCsvValue(string value)
+        {
+            return value.Trim().Trim('"');
         }
 
         private void CreateDefaultMetrics()
