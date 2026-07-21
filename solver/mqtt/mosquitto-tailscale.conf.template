@@ -1,0 +1,14 @@
+# Setup-MqttBroker.ps1에서 생성합니다. Broker PC의 Tailscale 주소에만 연결합니다.
+listener 1883 @BIND_ADDRESS@
+listener_allow_anonymous true
+
+persistence true
+persistence_location @DATA_DIRECTORY@/
+autosave_interval 60
+
+connection_messages true
+log_timestamp true
+log_type error
+log_type warning
+log_type notice
+log_type information
