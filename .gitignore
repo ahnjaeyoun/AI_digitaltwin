@@ -1,6 +1,5 @@
 dataset/
 .claude/
-ab_solver/
 docs/
 .vscode/
 .ipynb_checkpoints/

@@ -1,0 +1,357 @@
+{
+    "fluid":  {
+                  "name":  "ISO_VG46_hydraulic_oil",
+                  "model":  "incompressible",
+                  "compressibility":  false,
+                  "density_kg_m3":  860.0,
+                  "viscosity_pa_s":  0.0396,
+                  "kinematic_viscosity_cSt":  46.0,
+                  "kinematic_viscosity_m2_s_40c":  0.000046,
+                  "temperature_c":  40.559,
+                  "gravity_m_s2":  9.80665
+              },
+    "design_basis":  {
+                         "application":  "25-50 ton hydraulic press digital twin",
+                         "analysis_model":  "1D incompressible Navier-Stokes pipe-network solver",
+                         "nominal_pressure_bar":  230.0,
+                         "max_pressure_bar":  250.0,
+                         "nominal_flow_L_min":  15.0,
+                         "target_flow_L_min_range":  [
+                                                         10.0,
+                                                         20.0
+                                                     ],
+                         "pipe_material":  "E355+N / ST52 cold drawn seamless precision steel tube",
+                         "pipe_standard":  "EN 10305 / DIN 2391",
+                         "source_document":  "hydraulic_press_digital_twin_node_cell_design.docx"
+                     },
+    "solver":  {
+                   "flow_search_min_L_min":  0.0,
+                   "flow_search_max_L_min":  50.0
+               },
+    "press":  {
+                  "target_pressure_bar_g":  194.3,
+                  "target_pressure_basis":  "active_mode_load_node"
+              },
+    "active_mode":  "downstroke",
+    "nodes":  [
+                  {
+                      "id":  "N_TANK_SUCTION",
+                      "name":  "suction_1",
+                      "type":  "tank_suction_port",
+                      "elevation_m":  0.05,
+                      "pressure_bar_g":  0
+                  },
+                  {
+                      "id":  "N_PUMP_IN",
+                      "name":  "suction_2",
+                      "type":  "pump_inlet",
+                      "elevation_m":  1.00
+                  },
+                  {
+                      "id":  "N_PUMP_OUT",
+                      "name":  "pressure_1",
+                      "type":  "pump_outlet",
+                      "elevation_m":  1.00
+                  },
+                  {
+                      "id":  "N_VALVE_P",
+                      "name":  "pressure_2",
+                      "type":  "directional_valve_P_port",
+                      "elevation_m":  1.00
+                  },
+                  {
+                      "id":  "N_VALVE_A",
+                      "name":  "a_pipe_1",
+                      "type":  "directional_valve_A_port",
+                      "elevation_m":  1.00
+                  },
+                  {
+                      "id":  "N_CYL_CAP",
+                      "name":  "a_pipe_2",
+                      "type":  "cylinder_cap_end",
+                      "elevation_m":  2.10,
+                      "pressure_bar_g":  194.3
+                  },
+                  {
+                      "id":  "N_VALVE_B",
+                      "name":  "b_pipe_1",
+                      "type":  "directional_valve_B_port",
+                      "elevation_m":  1.00
+                  },
+                  {
+                      "id":  "N_CYL_ROD",
+                      "name":  "b_pipe_2",
+                      "type":  "cylinder_rod_end",
+                      "elevation_m":  2.10,
+                      "pressure_bar_g":  8.857
+                  },
+                  {
+                      "id":  "N_VALVE_T",
+                      "name":  "return_1",
+                      "type":  "directional_valve_T_port",
+                      "elevation_m":  1.00
+                  },
+                  {
+                      "id":  "N_TANK_RETURN",
+                      "name":  "return_2",
+                      "type":  "tank_return_port",
+                      "elevation_m":  0.50,
+                      "pressure_bar_g":  0
+                  },
+                  {
+                      "id":  "N_RELIEF_IN",
+                      "name":  "relief_valve_inlet",
+                      "type":  "relief_valve_inlet",
+                      "elevation_m":  1.00
+                  },
+                  {
+                      "id":  "N_RELIEF_OUT",
+                      "name":  "relief_1",
+                      "type":  "relief_valve_outlet",
+                      "elevation_m":  1.00
+                  },
+                  {
+                      "id":  "N_TANK_RELIEF",
+                      "name":  "relief_2",
+                      "type":  "tank_relief_return_port",
+                      "elevation_m":  0.50,
+                      "pressure_bar_g":  0.0
+                  }
+              ],
+    "cells":  [
+                  {
+                      "id":  "C_SUCTION",
+                      "type":  "pipe",
+                      "line_type":  "suction",
+                      "from":  "N_TANK_SUCTION",
+                      "to":  "N_PUMP_IN",
+                      "length_m":  0.45,
+                      "diameter_m":  0.021,
+                      "roughness_m":  0.0000015,
+                      "local_loss_k":  0.50,
+                      "bend_count":  0,
+                      "allow_reverse_flow":  false,
+                      "tube_spec":  "OD 25 mm x t 2 mm",
+                      "material":  "E355+N / ST52"
+                  },
+                  {
+                      "id":  "PUMP_01",
+                      "type":  "pump",
+                      "from":  "N_PUMP_IN",
+                      "to":  "N_PUMP_OUT",
+                      "is_running":  true,
+                      "rpm":  1771,
+                      "rated_rpm":  1800,
+                      "pump_head_shutoff_m":  2900.0,
+                      "pump_head_quadratic_coeff":  100.0,
+                      "head_curve":  {
+                                         "equation":  "H = (2900 - 100 * (Q / speed_ratio)^2) * speed_ratio^2",
+                                         "speed_ratio":  "rpm / rated_rpm",
+                                         "q_unit":  "m3/h",
+                                         "head_unit":  "m"
+                                     }
+                  },
+                  {
+                      "id":  "C_PRESSURE",
+                      "type":  "pipe",
+                      "line_type":  "pressure",
+                      "from":  "N_PUMP_OUT",
+                      "to":  "N_VALVE_P",
+                      "length_m":  0.50,
+                      "diameter_m":  0.008,
+                      "roughness_m":  0.0000015,
+                      "local_loss_k":  0.90,
+                      "bend_count":  0,
+                      "allow_reverse_flow":  false,
+                      "tube_spec":  "OD 12 mm x t 2 mm",
+                      "material":  "E355+N / ST52"
+                  },
+                  {
+                      "id":  "V_DIR_PA",
+                      "type":  "valve",
+                      "line_type":  "directional_P_to_A",
+                      "from":  "N_VALVE_P",
+                      "to":  "N_VALVE_A",
+                      "diameter_m":  0.008,
+                      "opening_percent":  82.1,
+                      "kv_max_m3_h":  0.50,
+                      "loss_coefficient_k":  8.0
+                  },
+                  {
+                      "id":  "V_DIR_PB",
+                      "type":  "valve",
+                      "line_type":  "directional_P_to_B",
+                      "from":  "N_VALVE_P",
+                      "to":  "N_VALVE_B",
+                      "diameter_m":  0.008,
+                      "opening_percent":  0,
+                      "kv_max_m3_h":  0.50,
+                      "loss_coefficient_k":  8.0
+                  },
+                  {
+                      "id":  "C_A_LINE",
+                      "type":  "pipe",
+                      "line_type":  "A_port",
+                      "from":  "N_VALVE_A",
+                      "to":  "N_CYL_CAP",
+                      "length_m":  2.10,
+                      "diameter_m":  0.008,
+                      "roughness_m":  0.0000015,
+                      "local_loss_k":  0.20,
+                      "bend_count":  1,
+                      "allow_reverse_flow":  true,
+                      "tube_spec":  "OD 12 mm x t 2 mm",
+                      "material":  "E355+N / ST52 or high-pressure hydraulic hose"
+                  },
+                  {
+                      "id":  "C_B_LINE",
+                      "type":  "pipe",
+                      "line_type":  "B_port",
+                      "from":  "N_VALVE_B",
+                      "to":  "N_CYL_ROD",
+                      "length_m":  1.90,
+                      "diameter_m":  0.008,
+                      "roughness_m":  0.0000015,
+                      "local_loss_k":  0.20,
+                      "bend_count":  1,
+                      "allow_reverse_flow":  true,
+                      "tube_spec":  "OD 12 mm x t 2 mm",
+                      "material":  "E355+N / ST52 or high-pressure hydraulic hose"
+                  },
+                  {
+                      "id":  "V_DIR_BT",
+                      "type":  "valve",
+                      "line_type":  "directional_B_to_T",
+                      "from":  "N_VALVE_B",
+                      "to":  "N_VALVE_T",
+                      "diameter_m":  0.008,
+                      "opening_percent":  82.1,
+                      "kv_max_m3_h":  0.50,
+                      "loss_coefficient_k":  8.0
+                  },
+                  {
+                      "id":  "V_DIR_AT",
+                      "type":  "valve",
+                      "line_type":  "directional_A_to_T",
+                      "from":  "N_VALVE_A",
+                      "to":  "N_VALVE_T",
+                      "diameter_m":  0.008,
+                      "opening_percent":  0,
+                      "kv_max_m3_h":  0.50,
+                      "loss_coefficient_k":  8.0
+                  },
+                  {
+                      "id":  "C_RETURN",
+                      "type":  "pipe",
+                      "line_type":  "return",
+                      "from":  "N_VALVE_T",
+                      "to":  "N_TANK_RETURN",
+                      "length_m":  0.75,
+                      "diameter_m":  0.016,
+                      "roughness_m":  0.0000015,
+                      "local_loss_k":  0.20,
+                      "bend_count":  0,
+                      "allow_reverse_flow":  false,
+                      "tube_spec":  "OD 20 mm x t 2 mm",
+                      "material":  "E355+N / ST52"
+                  },
+                  {
+                      "id":  "V_RELIEF",
+                      "type":  "valve",
+                      "line_type":  "relief_valve",
+                      "from":  "N_VALVE_P",
+                      "to":  "N_RELIEF_OUT",
+                      "diameter_m":  0.012,
+                      "opening_percent":  0,
+                      "kv_max_m3_h":  0.18,
+                      "loss_coefficient_k":  12.0,
+                      "set_pressure_bar_g":  250
+                  },
+                  {
+                      "id":  "C_RELIEF",
+                      "type":  "pipe",
+                      "line_type":  "relief",
+                      "from":  "N_RELIEF_OUT",
+                      "to":  "N_TANK_RELIEF",
+                      "length_m":  0.60,
+                      "diameter_m":  0.012,
+                      "roughness_m":  0.0000015,
+                      "local_loss_k":  0.20,
+                      "bend_count":  0,
+                      "allow_reverse_flow":  false,
+                      "tube_spec":  "OD 16 mm x t 2 mm",
+                      "material":  "E355+N / ST52"
+                  }
+              ],
+    "modes":  {
+                  "downstroke":  {
+                                     "description":  "P -\u003e A, B -\u003e T. Cylinder cap side is pressurized for press downstroke.",
+                                     "supply_path":  [
+                                                         "C_SUCTION",
+                                                         "PUMP_01",
+                                                         "C_PRESSURE",
+                                                         "V_DIR_PA",
+                                                         "C_A_LINE"
+                                                     ],
+                                     "return_path":  [
+                                                         "C_B_LINE",
+                                                         "V_DIR_BT",
+                                                         "C_RETURN"
+                                                     ],
+                                     "supply_start_node":  "N_TANK_SUCTION",
+                                     "load_node":  "N_CYL_CAP",
+                                     "return_start_node":  "N_CYL_ROD",
+                                     "return_end_node":  "N_TANK_RETURN"
+                                 },
+                  "pressure_hold":  {
+                                        "description":  "Closed-center pressure hold. Cylinder cap side keeps the press target pressure with zero commanded flow.",
+                                        "pressure_hold":  true,
+                                        "supply_path":  [
+
+                                                        ],
+                                        "return_path":  [
+
+                                                        ],
+                                        "supply_start_node":  "N_TANK_SUCTION",
+                                        "load_node":  "N_CYL_CAP",
+                                        "return_start_node":  "N_CYL_ROD",
+                                        "return_end_node":  "N_TANK_RETURN"
+                                    },
+                  "upstroke":  {
+                                   "description":  "P -\u003e B, A -\u003e T. Cylinder rod side is pressurized for press upstroke.",
+                                   "supply_path":  [
+                                                       "C_SUCTION",
+                                                       "PUMP_01",
+                                                       "C_PRESSURE",
+                                                       "V_DIR_PB",
+                                                       "C_B_LINE"
+                                                   ],
+                                   "return_path":  [
+                                                       "C_A_LINE",
+                                                       "V_DIR_AT",
+                                                       "C_RETURN"
+                                                   ],
+                                   "supply_start_node":  "N_TANK_SUCTION",
+                                   "load_node":  "N_CYL_ROD",
+                                   "return_start_node":  "N_CYL_CAP",
+                                   "return_end_node":  "N_TANK_RETURN"
+                               },
+                  "relief":  {
+                                 "description":  "Pump outlet/P port overpressure is discharged through relief valve to tank.",
+                                 "supply_path":  [
+                                                     "C_SUCTION",
+                                                     "PUMP_01",
+                                                     "C_PRESSURE",
+                                                     "V_RELIEF",
+                                                     "C_RELIEF"
+                                                 ],
+                                 "return_path":  [
+
+                                                 ],
+                                 "supply_start_node":  "N_TANK_SUCTION",
+                                 "load_node":  "N_TANK_RELIEF",
+                                 "return_start_node":  "N_RELIEF_OUT",
+                                 "return_end_node":  "N_TANK_RELIEF"
+                             }
+              }
+}
