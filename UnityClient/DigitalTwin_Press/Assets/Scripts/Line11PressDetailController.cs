@@ -77,6 +77,7 @@ namespace DigitalTwin.Line11
         private GUIStyle footnoteStyle;
         private GUIStyle bodyStyle;
         private GUIStyle pipeButtonStyle;
+        private GUIStyle operatingStatusStyle;
         private Texture2D buttonNormalTexture;
         private Texture2D buttonHoverTexture;
         private Texture2D buttonActiveTexture;
@@ -86,8 +87,18 @@ namespace DigitalTwin.Line11
         private float lastHistoryUpdate;
         private int selectedPipeIndex;
         private int warningAlarmCount = 2;
+        private bool solverWarningWasActive;
+        private int reliefValveOpenCount;
+        private bool reliefValveWasOpen;
+        private float oilTemperatureC = 44.2f;
+        private float pumpRpm = 1450f;
         private float targetPressureBar = 116f;
         private float reliefSetPressureBar = 130f;
+        [SerializeField] private string pressSupplyPipeId = "pipe-pump-valve";
+        [SerializeField, Min(1f)] private float pressCylinderBoreDiameterMm = 100f;
+        [SerializeField, Range(0f, 1f)] private float hydraulicEfficiency = 0.95f;
+        [SerializeField, Min(1)] private int pressCylinderCount = 1;
+        private readonly DateTime[] alertTimestamps = new DateTime[3];
         private Vector2 metricsScrollPosition;
         private Camera assetPreviewCamera;
         private RenderTexture assetPreviewTexture;
@@ -141,6 +152,7 @@ namespace DigitalTwin.Line11
 
             CreateDefaultMetrics();
             InitializeRealtimeHistory();
+            InitializeAlertTimestamps();
             uiFont = CreateFont();
 
             if (targetLine11Root != null)
@@ -156,8 +168,10 @@ namespace DigitalTwin.Line11
 
         /// <summary>
         /// Updates one row from a solver, PLC, MQTT client, or other live-data source.
-        /// IDs: pipe-pump-tank, pipe-pump-valve, pipe-valve-tank-return,
-        /// pipe-valve-tank-relief, motor, valve, cylinder.
+        /// IDs: pipe-pump-tank (tank-to-pump suction), pipe-pump-valve
+        /// (pump-to-valve discharge), pipe-valve-tank-return,
+        /// pipe-valve-tank-relief, motor, valve-pa, valve-bt, valve-pb,
+        /// valve-at, relief-valve, cylinder.
         /// </summary>
         public void SetMetric(
             string componentId,
@@ -197,12 +211,62 @@ namespace DigitalTwin.Line11
         }
 
         /// <summary>
+        /// Updates the Solver warning state and counts only false-to-true transitions.
+        /// </summary>
+        public void SetSolverWarning(bool isWarning)
+        {
+            if (isWarning && !solverWarningWasActive)
+                warningAlarmCount++;
+
+            solverWarningWasActive = isWarning;
+        }
+
+        /// <summary>
+        /// Updates operating values received from the live Solver input.
+        /// </summary>
+        public void SetOperatingMeasurements(float temperatureC, float rpm)
+        {
+            oilTemperatureC = temperatureC;
+            pumpRpm = Mathf.Max(0f, rpm);
+        }
+
+        /// <summary>
+        /// Sets the accumulated number of relief-valve opening events.
+        /// </summary>
+        public void SetReliefValveOpenCount(int count)
+        {
+            reliefValveOpenCount = Mathf.Max(0, count);
+        }
+
+        /// <summary>
+        /// Updates the current relief-valve state. The count increases only on
+        /// a closed-to-open transition, so repeated open samples count once.
+        /// </summary>
+        public void SetReliefValveOpen(bool isOpen)
+        {
+            if (isOpen && !reliefValveWasOpen)
+                reliefValveOpenCount++;
+
+            reliefValveWasOpen = isOpen;
+        }
+
+        /// <summary>
         /// Updates the target operating pressure and configured relief-valve pressure.
         /// </summary>
         public void SetPressureTargets(float targetBar, float reliefSetBar)
         {
             targetPressureBar = Mathf.Max(0f, targetBar);
             reliefSetPressureBar = Mathf.Max(0f, reliefSetBar);
+        }
+
+        /// <summary>
+        /// Updates the hydraulic-cylinder specification used for the live press-force calculation.
+        /// </summary>
+        public void SetPressCylinderSpecification(float boreDiameterMm, float efficiency, int cylinderCount = 1)
+        {
+            pressCylinderBoreDiameterMm = Mathf.Max(1f, boreDiameterMm);
+            hydraulicEfficiency = Mathf.Clamp01(efficiency);
+            pressCylinderCount = Mathf.Max(1, cylinderCount);
         }
 
         public void OpenDetail()
@@ -256,6 +320,10 @@ namespace DigitalTwin.Line11
                 CloseDetail();
 
             if (!Input.GetMouseButtonDown(0))
+                return;
+
+            // FactoryTopView owns the left navigation area. Do not raycast through its buttons.
+            if (SceneManager.GetActiveScene().name == "FactoryTopView" && Input.mousePosition.x <= 220f)
                 return;
 
             Vector2 guiMousePosition = new Vector2(
@@ -325,19 +393,27 @@ namespace DigitalTwin.Line11
 
         private void DrawSidebarGui()
         {
+            // The overview scene provides navigation for all 16 lines. Once the Line11 detail
+            // view opens, this compact sidebar returns so the existing detail workflow is kept.
+            if (!detailOpen && SceneManager.GetActiveScene().name == "FactoryTopView")
+            {
+                sidebarGuiRect = Rect.zero;
+                return;
+            }
+
             float sidebarWidth = detailOpen ? 54f : 150f;
             sidebarGuiRect = new Rect(0f, 0f, sidebarWidth, Screen.height);
             DrawColorRect(sidebarGuiRect, SidebarColor);
 
             GUI.Label(
                 new Rect(6f, 8f, sidebarWidth - 12f, 32f),
-                detailOpen ? "DT" : "DIGITAL TWIN",
+                detailOpen ? "DT" : "디지털 트윈",
                 detailOpen ? pressureStyle : smallHeaderStyle);
 
             line11ButtonGuiRect = new Rect(6f, 68f, sidebarWidth - 12f, 50f);
             if (GUI.Button(
                     line11ButtonGuiRect,
-                    detailOpen ? "L11" : "Line11",
+                    detailOpen ? "L11" : "라인11",
                     lineButtonStyle))
             {
                 OpenDetail();
@@ -347,7 +423,7 @@ namespace DigitalTwin.Line11
             {
                 GUI.Label(
                     new Rect(10f, 126f, sidebarWidth - 20f, 26f),
-                    "Hydraulic Press",
+                    "유압 프레스",
                     subtitleStyle);
             }
         }
@@ -363,11 +439,11 @@ namespace DigitalTwin.Line11
 
             GUI.Label(
                 new Rect(navWidth + 14f, 5f, 380f, 34f),
-                "<  LINE11 HYDRAULIC PRESS",
+                "<  LINE11 유압 프레스",
                 smallHeaderStyle);
             GUI.Label(
-                new Rect(Screen.width - 330f, 5f, 250f, 34f),
-                "LIVE MONITORING   |   SYSTEM NORMAL",
+                new Rect(Screen.width - 210f, 5f, 140f, 34f),
+                "실시간 모니터링",
                 subtitleStyle);
 
             if (GUI.Button(
@@ -400,8 +476,8 @@ namespace DigitalTwin.Line11
         private void DrawPressCycleColumn(Rect column)
         {
             const float gap = 8f;
-            float statusHeight = column.height * 0.20f;
-            float cycleHeight = column.height * 0.51f;
+            float statusHeight = Mathf.Clamp(column.height * 0.12f, 74f, 94f);
+            float cycleHeight = column.height * 0.58f;
             Rect statusPanel = new Rect(column.x, column.y, column.width, statusHeight);
             Rect cyclePanel = new Rect(column.x, statusPanel.yMax + gap, column.width, cycleHeight);
             Rect conditionPanel = new Rect(
@@ -410,96 +486,79 @@ namespace DigitalTwin.Line11
                 column.width,
                 column.yMax - cyclePanel.yMax - gap);
 
-            GetPressCycleState(out float strokeNormalized, out string stage, out float phase);
-            DrawCycleStatusPanel(statusPanel, strokeNormalized, stage, phase);
-            DrawRamPositionPanel(cyclePanel, strokeNormalized, stage);
+            DrawCycleStatusPanel(statusPanel);
+            DrawRamPositionPanel(cyclePanel);
             DrawConditionPanel(conditionPanel);
         }
 
-        private void DrawCycleStatusPanel(
-            Rect rect,
-            float strokeNormalized,
-            string stage,
-            float phase)
+        private void DrawCycleStatusPanel(Rect rect)
         {
             DrawColorRect(rect, PanelColor);
             GUI.Label(
                 new Rect(rect.x + 12f, rect.y + 6f, rect.width - 24f, 26f),
-                "PRESS CYCLE OVERVIEW",
+                "프레스 운전 상태",
                 smallHeaderStyle);
 
-            Rect statusChip = new Rect(rect.x + 12f, rect.y + 38f, 78f, 26f);
+            Rect statusChip = new Rect(rect.x + 12f, rect.y + 38f, rect.width - 24f, 26f);
             DrawColorRect(statusChip, SuccessColor);
-            GUI.Label(statusChip, "RUNNING", tableHeaderStyle);
-            GUI.Label(
-                new Rect(statusChip.xMax + 10f, rect.y + 38f, rect.width - 112f, 26f),
-                stage,
-                pressureStyle);
-
-            Rect progressTrack = new Rect(rect.x + 12f, rect.yMax - 24f, rect.width - 24f, 10f);
-            DrawColorRect(progressTrack, HeaderColor);
-            DrawColorRect(
-                new Rect(progressTrack.x, progressTrack.y, progressTrack.width * phase, progressTrack.height),
-                AccentColor);
-            GUI.Label(
-                new Rect(rect.x + 12f, progressTrack.y - 19f, rect.width - 24f, 18f),
-                $"Cycle  {phase * 100f:0}%     Stroke  {strokeNormalized * 400f:0} / 400 mm",
-                footnoteStyle);
+            GUI.Label(statusChip, "운전 중", operatingStatusStyle);
         }
 
-        private void DrawRamPositionPanel(Rect rect, float strokeNormalized, string stage)
+        private void DrawRamPositionPanel(Rect rect)
         {
             DrawColorRect(rect, PanelColor);
             GUI.Label(
                 new Rect(rect.x + 12f, rect.y + 6f, rect.width - 24f, 26f),
-                "RAM POSITION / PRESS FORCE",
+                "프레스 압력 / 가압력",
                 smallHeaderStyle);
 
             Rect previewRect = new Rect(
                 rect.x + 10f,
                 rect.y + 36f,
                 rect.width - 20f,
-                Mathf.Max(62f, rect.height - 116f));
+                Mathf.Max(62f, rect.height - 102f));
             DrawColorRect(previewRect, new Color32(31, 35, 39, 255));
             if (assetPreviewTexture != null)
                 GUI.DrawTexture(previewRect, assetPreviewTexture, ScaleMode.ScaleAndCrop, false);
             else
-                GUI.Label(previewRect, "PRESS FRAME ASSET", tableHeaderStyle);
+                GUI.Label(previewRect, "프레스 프레임 설비", tableHeaderStyle);
 
-            Rect liveBadge = new Rect(previewRect.x + 6f, previewRect.y + 6f, 70f, 20f);
-            DrawColorRect(liveBadge, new Color32(27, 156, 196, 215));
-            GUI.Label(liveBadge, "LIVE ASSET", tableHeaderStyle);
-
-            float currentPressure = pressureHistory[pressureHistory.Length - 1];
-            float pressForce = currentPressure * 0.82f;
+            float currentPressure = GetPressSupplyPressureBar();
+            float pressForce = CalculatePressForceTon(currentPressure);
             float cardGap = 5f;
             float cardY = previewRect.yMax + 5f;
-            float cardHeight = Mathf.Max(34f, rect.yMax - 34f - cardY);
-            float cardWidth = (rect.width - 20f - cardGap * 2f) / 3f;
+            float cardHeight = Mathf.Max(34f, rect.yMax - 10f - cardY);
+            float cardWidth = (rect.width - 20f - cardGap) / 2f;
             float cardX = rect.x + 10f;
 
             DrawCycleValueCard(
                 new Rect(cardX, cardY, cardWidth, cardHeight),
-                "RAM POSITION",
-                $"{strokeNormalized * 400f:0} mm",
-                AccentColor);
-            cardX += cardWidth + cardGap;
-            DrawCycleValueCard(
-                new Rect(cardX, cardY, cardWidth, cardHeight),
-                "PRESSURE",
+                "공급 파이프 압력",
                 $"{currentPressure:0.0} bar",
                 TextColor);
             cardX += cardWidth + cardGap;
             DrawCycleValueCard(
                 new Rect(cardX, cardY, cardWidth, cardHeight),
-                "PRESS FORCE",
+                "가압력",
                 $"{pressForce:0.0} ton",
                 new Color32(224, 172, 69, 255));
+        }
 
-            GUI.Label(
-                new Rect(rect.x + 12f, rect.yMax - 34f, rect.width - 24f, 22f),
-                $"CURRENT STAGE   {stage}",
-                footnoteStyle);
+        private float GetPressSupplyPressureBar()
+        {
+            HydraulicMetric supplyPipe = metrics.Find(
+                item => string.Equals(item.Id, pressSupplyPipeId, StringComparison.OrdinalIgnoreCase));
+
+            return supplyPipe != null ? Mathf.Max(0f, supplyPipe.Pressure) : 0f;
+        }
+
+        private float CalculatePressForceTon(float pressureBar)
+        {
+            float boreDiameterCm = pressCylinderBoreDiameterMm * 0.1f;
+            float pistonAreaCm2 = Mathf.PI * boreDiameterCm * boreDiameterCm * 0.25f;
+
+            // 1 bar = 10 N/cm2, and 1 metric ton-force = 9806.65 N.
+            return pressureBar * pistonAreaCm2 * hydraulicEfficiency * pressCylinderCount / 980.665f;
         }
 
         private void DrawCycleValueCard(Rect rect, string label, string value, Color accent)
@@ -519,7 +578,7 @@ namespace DigitalTwin.Line11
             DrawColorRect(rect, PanelColor);
             GUI.Label(
                 new Rect(rect.x + 12f, rect.y + 6f, rect.width - 24f, 26f),
-                "CONDITION SUMMARY",
+                "상태 요약",
                 smallHeaderStyle);
 
             float gap = 6f;
@@ -531,13 +590,13 @@ namespace DigitalTwin.Line11
             float secondY = firstY + cardHeight + gap;
 
             DrawConditionCard(new Rect(firstX, firstY, cardWidth, cardHeight),
-                "OIL TEMP", "44.2 C", SuccessColor);
+                "오일 온도", $"{oilTemperatureC:0.0} C", SuccessColor);
             DrawConditionCard(new Rect(secondX, firstY, cardWidth, cardHeight),
-                "PUMP RPM", "1450 RPM", AccentColor);
+                "펌프 회전수", $"{pumpRpm:0} RPM", AccentColor);
             DrawConditionCard(new Rect(firstX, secondY, cardWidth, cardHeight),
-                "ASSET HEALTH", "92 %", SuccessColor);
+                "릴리프 밸브 개도 횟수", $"{reliefValveOpenCount}회", SuccessColor);
             DrawConditionCard(new Rect(secondX, secondY, cardWidth, cardHeight),
-                "WARNING", $"{warningAlarmCount} EVENTS", new Color32(216, 110, 76, 255));
+                "경고", $"{warningAlarmCount}건", new Color32(216, 110, 76, 255));
         }
 
         private void DrawConditionCard(Rect rect, string label, string value, Color accent)
@@ -558,22 +617,22 @@ namespace DigitalTwin.Line11
 
             if (cyclePhase < 0.15f)
             {
-                stage = "LOADING";
+                stage = "준비 중";
                 strokeNormalized = 0f;
             }
             else if (cyclePhase < 0.55f)
             {
-                stage = "PRESSING";
+                stage = "가압 중";
                 strokeNormalized = Mathf.InverseLerp(0.15f, 0.55f, cyclePhase);
             }
             else if (cyclePhase < 0.70f)
             {
-                stage = "HOLDING";
+                stage = "유지 중";
                 strokeNormalized = 1f;
             }
             else
             {
-                stage = "RETURNING";
+                stage = "복귀 중";
                 strokeNormalized = 1f - Mathf.InverseLerp(0.70f, 1f, cyclePhase);
             }
         }
@@ -583,7 +642,7 @@ namespace DigitalTwin.Line11
             DrawColorRect(panel, PanelColor);
             GUI.Label(
                 new Rect(panel.x + 12f, panel.y + 6f, panel.width - 24f, 28f),
-                "PRESSURE SETTINGS / COMPONENT METRICS",
+                "압력 설정 / 구성요소 계측",
                 smallHeaderStyle);
 
             const float summaryHeight = 92f;
@@ -599,14 +658,14 @@ namespace DigitalTwin.Line11
         {
             DrawColorRect(rect, new Color32(31, 35, 39, 255));
             GUI.Label(new Rect(rect.x + 10f, rect.y + 4f, rect.width - 20f, 22f),
-                "PRESSURE SETPOINTS", footnoteStyle);
+                "압력 설정값", footnoteStyle);
 
             const float gap = 8f;
             float cardWidth = (rect.width - 20f - gap) * 0.5f;
             Rect targetCard = new Rect(rect.x + 10f, rect.y + 28f, cardWidth, 54f);
             Rect reliefCard = new Rect(targetCard.xMax + gap, targetCard.y, cardWidth, targetCard.height);
-            DrawPressureSettingCard(targetCard, "TARGET PRESSURE", targetPressureBar, AccentColor);
-            DrawPressureSettingCard(reliefCard, "RELIEF SET PRESSURE", reliefSetPressureBar,
+            DrawPressureSettingCard(targetCard, "목표 압력", targetPressureBar, AccentColor);
+            DrawPressureSettingCard(reliefCard, "릴리프 설정 압력", reliefSetPressureBar,
                 new Color32(224, 172, 69, 255));
         }
 
@@ -627,13 +686,13 @@ namespace DigitalTwin.Line11
 
             DrawColorRect(new Rect(rect.x, rect.y, rect.width, headerHeight), HeaderColor);
             GUI.Label(new Rect(rect.x + 6f, rect.y, componentWidth - 6f, headerHeight),
-                "COMPONENT", tableHeaderStyle);
+                "구성요소", tableHeaderStyle);
             GUI.Label(new Rect(rect.x + componentWidth, rect.y, valueWidth, headerHeight),
-                "FLOW\nL/min", tableHeaderStyle);
+                "유량\nL/min", tableHeaderStyle);
             GUI.Label(new Rect(rect.x + componentWidth + valueWidth, rect.y, valueWidth, headerHeight),
-                "SPEED\nm/s", tableHeaderStyle);
+                "유속\nm/s", tableHeaderStyle);
             GUI.Label(new Rect(rect.x + componentWidth + valueWidth * 2f, rect.y, valueWidth, headerHeight),
-                "PRESS.\nbar", tableHeaderStyle);
+                "압력\nbar", tableHeaderStyle);
 
             const float gap = 4f;
             const float rowHeight = 40f;
@@ -694,7 +753,7 @@ namespace DigitalTwin.Line11
         {
             DrawColorRect(rect, PanelColor);
             GUI.Label(new Rect(rect.x + 12f, rect.y + 6f, rect.width - 24f, 26f),
-                "ASSET METRICS", smallHeaderStyle);
+                "설비 계측", smallHeaderStyle);
 
             float utilization = Mathf.Clamp01(pressureHistory[pressureHistory.Length - 1] / 160f);
             Vector2 center = new Vector2(rect.center.x, rect.y + rect.height * 0.68f);
@@ -727,14 +786,14 @@ namespace DigitalTwin.Line11
             GUI.Label(new Rect(rect.x, rect.y + rect.height - 54f, rect.width, 28f),
                 $"{utilization * 100f:0}%", pressureStyle);
             GUI.Label(new Rect(rect.x, rect.y + rect.height - 29f, rect.width, 20f),
-                "Effective Utilization", tableHeaderStyle);
+                "유효 가동률", tableHeaderStyle);
         }
 
         private void DrawProfilePanel(Rect rect)
         {
             DrawColorRect(rect, PanelColor);
             GUI.Label(new Rect(rect.x + 12f, rect.y + 6f, rect.width - 24f, 26f),
-                "PRESSURE PROFILE", smallHeaderStyle);
+                "압력 분포", smallHeaderStyle);
 
             Rect bar = new Rect(rect.x + 14f, rect.y + rect.height * 0.48f, rect.width - 28f, 40f);
             DrawColorRect(new Rect(bar.x, bar.y, bar.width * 0.18f, bar.height), new Color32(147, 93, 182, 255));
@@ -747,16 +806,16 @@ namespace DigitalTwin.Line11
         {
             DrawColorRect(rect, PanelColor);
             GUI.Label(new Rect(rect.x + 12f, rect.y + 6f, rect.width - 24f, 26f),
-                "OPERATIONAL SAFETY INTELLIGENCE", smallHeaderStyle);
+                "운영 안전 정보", smallHeaderStyle);
             GUI.Label(new Rect(rect.x + 12f, rect.y + 38f, rect.width - 24f, 42f),
-                "Hazard Description\nHigh hydraulic pressure may cause hot surfaces or fluid leakage.", bodyStyle);
+                "위험 설명\n높은 유압으로 표면 과열 또는 유체 누출이 발생할 수 있습니다.", bodyStyle);
             GUI.Label(new Rect(rect.x + 12f, rect.y + 90f, rect.width - 24f, 54f),
-                "Control Measure\nWear eye protection, isolate pressure before maintenance, and inspect seals.", bodyStyle);
+                "조치 사항\n보안경을 착용하고 정비 전 압력을 차단한 후 씰을 점검하세요.", bodyStyle);
 
             float indicatorY = rect.yMax - 34f;
             DrawColorRect(new Rect(rect.x + 14f, indicatorY + 4f, 12f, 12f), SuccessColor);
             GUI.Label(new Rect(rect.x + 34f, indicatorY, rect.width - 48f, 22f),
-                "Probability     LOW", tableHeaderStyle);
+                "발생 가능성     낮음", tableHeaderStyle);
         }
 
         private void DrawRealtimeColumn(Rect column)
@@ -769,7 +828,7 @@ namespace DigitalTwin.Line11
 
             DrawColorRect(realtime, PanelColor);
             GUI.Label(new Rect(realtime.x + 12f, realtime.y + 6f, realtime.width - 24f, 26f),
-                "REAL-TIME VIEW", smallHeaderStyle);
+                "실시간 보기", smallHeaderStyle);
 
             DrawPipeSelector(realtime);
 
@@ -777,20 +836,26 @@ namespace DigitalTwin.Line11
             float chartStartY = realtime.y + 68f;
             float chartHeight = (realtime.yMax - chartStartY - chartGap * 2f - 8f) / 3f;
             DrawChart(new Rect(realtime.x + 10f, chartStartY, realtime.width - 20f, chartHeight),
-                "FLOW RATE", flowHistory, 0f, 55f, "L/min", AccentColor);
+                "유량", flowHistory, 0f, 55f, "L/min", AccentColor);
             DrawChart(new Rect(realtime.x + 10f, chartStartY + chartHeight + chartGap,
                     realtime.width - 20f, chartHeight),
-                "VELOCITY", velocityHistory, 0f, 4f, "m/s", new Color32(35, 181, 224, 255));
+                "유속", velocityHistory, 0f, 4f, "m/s", new Color32(35, 181, 224, 255));
             DrawChart(new Rect(realtime.x + 10f, chartStartY + (chartHeight + chartGap) * 2f,
                     realtime.width - 20f, chartHeight),
-                "PRESSURE", pressureHistory, 0f, 160f, "bar", new Color32(85, 141, 212, 255));
+                "압력", pressureHistory, 0f, 160f, "bar", new Color32(85, 141, 212, 255));
 
             DrawRecommendations(recommendations);
         }
 
         private void DrawPipeSelector(Rect realtimePanel)
         {
-            string[] buttonLabels = { "P1  TANK", "P2  VALVE", "P3  RETURN", "P4  RELIEF" };
+            string[] buttonLabels =
+            {
+                "흡입  탱크→펌프",
+                "토출  펌프→밸브P",
+                "복귀  밸브T→탱크",
+                "릴리프  밸브P→탱크"
+            };
             GUIStyle selectorStyle = pipeButtonStyle ?? GUI.skin.button;
             float gap = 4f;
             float availableWidth = realtimePanel.width - 20f;
@@ -861,13 +926,15 @@ namespace DigitalTwin.Line11
         {
             DrawColorRect(rect, PanelColor);
             GUI.Label(new Rect(rect.x + 12f, rect.y + 6f, rect.width - 24f, 26f),
-                "RECOMMENDATIONS / ALERTS", smallHeaderStyle);
+                "권장사항 / 알람", smallHeaderStyle);
+
+            InitializeAlertTimestamps();
 
             string[] alerts =
             {
-                "P-778  Safety Warning: hydraulic pressure inspection required",
-                "P-779  Check ValveToTank_Return flow stability",
-                "P-780  Cylinder seal temperature within normal range"
+                $"{alertTimestamps[0]:yyyy-MM-dd HH:mm:ss}  안전 경고: 유압 점검이 필요합니다",
+                $"{alertTimestamps[1]:yyyy-MM-dd HH:mm:ss}  밸브-탱크 리턴 유량 안정성을 확인하세요",
+                $"{alertTimestamps[2]:yyyy-MM-dd HH:mm:ss}  실린더 씰 온도가 정상 범위입니다"
             };
 
             float gap = 5f;
@@ -882,6 +949,17 @@ namespace DigitalTwin.Line11
                     alerts[index], bodyStyle);
                 y += rowHeight + gap;
             }
+        }
+
+        private void InitializeAlertTimestamps()
+        {
+            if (alertTimestamps[0] != DateTime.MinValue)
+                return;
+
+            DateTime now = DateTime.Now;
+            alertTimestamps[0] = now.AddMinutes(-18d);
+            alertTimestamps[1] = now.AddMinutes(-9d);
+            alertTimestamps[2] = now.AddMinutes(-2d);
         }
 
         private void InitializeRealtimeHistory()
@@ -957,7 +1035,7 @@ namespace DigitalTwin.Line11
             // Serialized runtime instances can survive a script hot reload with the old
             // ready flag but without styles that were added in the new script version.
             if (guiStylesReady && smallHeaderStyle != null && lineButtonStyle != null &&
-                closeButtonStyle != null && pipeButtonStyle != null)
+                closeButtonStyle != null && pipeButtonStyle != null && operatingStatusStyle != null)
                 return;
 
             guiStylesReady = true;
@@ -975,6 +1053,11 @@ namespace DigitalTwin.Line11
             footnoteStyle = CreateGuiLabelStyle(12, FontStyle.Italic, MutedTextColor, TextAnchor.MiddleLeft);
             bodyStyle = CreateGuiLabelStyle(12, FontStyle.Normal, TextColor, TextAnchor.UpperLeft);
             bodyStyle.wordWrap = true;
+            operatingStatusStyle = CreateGuiLabelStyle(
+                14,
+                FontStyle.Bold,
+                Color.black,
+                TextAnchor.MiddleCenter);
 
             lineButtonStyle = new GUIStyle(GUI.skin.button)
             {
@@ -1208,19 +1291,27 @@ namespace DigitalTwin.Line11
         {
             // Temporary sample values. Replace these through SetMetric when live data is connected.
             metrics.Add(new HydraulicMetric(
-                "pipe-pump-tank", "PIPE 01   Pump > Tank", 35.2f, 2.30f, 12.0f));
+                "pipe-pump-tank", "흡입 배관  탱크→펌프", 35.2f, 2.30f, 12.0f));
             metrics.Add(new HydraulicMetric(
-                "pipe-pump-valve", "PIPE 02   Pump > Valve", 42.0f, 2.80f, 125.0f));
+                "pipe-pump-valve", "토출 배관  펌프→밸브P", 42.0f, 2.80f, 125.0f));
             metrics.Add(new HydraulicMetric(
-                "pipe-valve-tank-return", "PIPE 03   Valve > Tank", 34.8f, 2.20f, 10.5f));
+                "pipe-valve-tank-return", "복귀 배관  밸브T→탱크", 34.8f, 2.20f, 10.5f));
             metrics.Add(new HydraulicMetric(
-                "pipe-valve-tank-relief", "PIPE 04   Relief > Tank", 4.1f, 0.45f, 126.0f));
+                "pipe-valve-tank-relief", "릴리프 배관  밸브P→탱크", 4.1f, 0.45f, 126.0f));
             metrics.Add(new HydraulicMetric(
-                "motor", "MOTOR   Drive Motor", 40.0f, 1.85f, 122.0f));
+                "motor", "펌프 구동 모터", 40.0f, 1.85f, 122.0f));
             metrics.Add(new HydraulicMetric(
-                "valve", "VALVE   Directional", 39.1f, 2.60f, 120.0f));
+                "valve-pa", "방향밸브 P→A  하강 공급", 39.1f, 2.60f, 120.0f));
             metrics.Add(new HydraulicMetric(
-                "cylinder", "CYLINDER   Main", 37.8f, 0.42f, 116.0f));
+                "valve-bt", "방향밸브 B→T  하강 복귀", 39.1f, 2.40f, 10.5f));
+            metrics.Add(new HydraulicMetric(
+                "valve-pb", "방향밸브 P→B  상승 공급", 0f, 0f, 120.0f));
+            metrics.Add(new HydraulicMetric(
+                "valve-at", "방향밸브 A→T  상승 복귀", 0f, 0f, 10.5f));
+            metrics.Add(new HydraulicMetric(
+                "relief-valve", "릴리프 밸브 P→T  과압 배출", 0f, 0f, 126.0f));
+            metrics.Add(new HydraulicMetric(
+                "cylinder", "프레스 실린더  캡/로드", 37.8f, 0.42f, 116.0f));
         }
 
         private void BuildInterface()
