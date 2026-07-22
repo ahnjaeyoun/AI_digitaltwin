@@ -11469,8 +11469,8 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: bb4245ef54721a64a9c9c0405cd83a74, type: 3}
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::DigitalTwin.Press.PressShaftAnimator
-  strokeDistance: 0.42
-  cycleDuration: 8
+  strokeDistance: 0.3
+  cycleDuration: 15
 --- !u!1001 &120168610
 PrefabInstance:
   m_ObjectHideFlags: 0
@@ -23200,8 +23200,8 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: bb4245ef54721a64a9c9c0405cd83a74, type: 3}
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::DigitalTwin.Press.PressShaftAnimator
-  strokeDistance: 0.42
-  cycleDuration: 8
+  strokeDistance: 0.3
+  cycleDuration: 15
 --- !u!1 &275104032 stripped
 GameObject:
   m_CorrespondingSourceObject: {fileID: 6715785524865576176, guid: d182a56565c8f72429a02f2a504075d7, type: 3}
@@ -23463,8 +23463,8 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: bb4245ef54721a64a9c9c0405cd83a74, type: 3}
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::DigitalTwin.Press.PressShaftAnimator
-  strokeDistance: 0.42
-  cycleDuration: 8
+  strokeDistance: 0.3
+  cycleDuration: 15
 --- !u!1 &278222011
 GameObject:
   m_ObjectHideFlags: 0
@@ -26259,8 +26259,8 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: bb4245ef54721a64a9c9c0405cd83a74, type: 3}
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::DigitalTwin.Press.PressShaftAnimator
-  strokeDistance: 0.42
-  cycleDuration: 8
+  strokeDistance: 0.3
+  cycleDuration: 15
 --- !u!1001 &303969220
 PrefabInstance:
   m_ObjectHideFlags: 0
@@ -41306,8 +41306,8 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: bb4245ef54721a64a9c9c0405cd83a74, type: 3}
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::DigitalTwin.Press.PressShaftAnimator
-  strokeDistance: 0.42
-  cycleDuration: 8
+  strokeDistance: 0.3
+  cycleDuration: 15
 --- !u!1 &510541164 stripped
 GameObject:
   m_CorrespondingSourceObject: {fileID: 9178790055576924257, guid: ad0d78ff5de0e934b8acf5bde871f45b, type: 3}
@@ -41325,8 +41325,8 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: bb4245ef54721a64a9c9c0405cd83a74, type: 3}
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::DigitalTwin.Press.PressShaftAnimator
-  strokeDistance: 0.42
-  cycleDuration: 8
+  strokeDistance: 0.3
+  cycleDuration: 15
 --- !u!1001 &511852027
 PrefabInstance:
   m_ObjectHideFlags: 0
@@ -58239,8 +58239,8 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: bb4245ef54721a64a9c9c0405cd83a74, type: 3}
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::DigitalTwin.Press.PressShaftAnimator
-  strokeDistance: 0.42
-  cycleDuration: 8
+  strokeDistance: 0.3
+  cycleDuration: 15
 --- !u!1001 &707338845
 PrefabInstance:
   m_ObjectHideFlags: 0
@@ -68288,8 +68288,8 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: bb4245ef54721a64a9c9c0405cd83a74, type: 3}
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::DigitalTwin.Press.PressShaftAnimator
-  strokeDistance: 0.42
-  cycleDuration: 8
+  strokeDistance: 0.3
+  cycleDuration: 15
 --- !u!4 &846209097 stripped
 Transform:
   m_CorrespondingSourceObject: {fileID: 1221563628699088950, guid: 6d8194794c5e3b84eaad5f2037d17e71, type: 3}
@@ -103300,8 +103300,8 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: bb4245ef54721a64a9c9c0405cd83a74, type: 3}
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::DigitalTwin.Press.PressShaftAnimator
-  strokeDistance: 0.42
-  cycleDuration: 8
+  strokeDistance: 0.3
+  cycleDuration: 15
 --- !u!1001 &1243093239
 PrefabInstance:
   m_ObjectHideFlags: 0
@@ -106681,8 +106681,8 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: bb4245ef54721a64a9c9c0405cd83a74, type: 3}
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::DigitalTwin.Press.PressShaftAnimator
-  strokeDistance: 0.42
-  cycleDuration: 8
+  strokeDistance: 0.3
+  cycleDuration: 15
 --- !u!4 &1289157727 stripped
 Transform:
   m_CorrespondingSourceObject: {fileID: -8679921383154817045, guid: ab65cd51c8c93fd4b9e90148d2876ee4, type: 3}
@@ -130079,8 +130079,8 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: bb4245ef54721a64a9c9c0405cd83a74, type: 3}
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::DigitalTwin.Press.PressShaftAnimator
-  strokeDistance: 0.42
-  cycleDuration: 8
+  strokeDistance: 0.3
+  cycleDuration: 15
 --- !u!1 &1498455017
 GameObject:
   m_ObjectHideFlags: 0
@@ -144981,8 +144981,8 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: bb4245ef54721a64a9c9c0405cd83a74, type: 3}
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::DigitalTwin.Press.PressShaftAnimator
-  strokeDistance: 0.42
-  cycleDuration: 8
+  strokeDistance: 0.3
+  cycleDuration: 15
 --- !u!4 &1692812961 stripped
 Transform:
   m_CorrespondingSourceObject: {fileID: -8679921383154817045, guid: 4aaef017540a1734a961f0f26ce461ac, type: 3}
@@ -146319,8 +146319,8 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: bb4245ef54721a64a9c9c0405cd83a74, type: 3}
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::DigitalTwin.Press.PressShaftAnimator
-  strokeDistance: 0.42
-  cycleDuration: 8
+  strokeDistance: 0.3
+  cycleDuration: 15
 --- !u!1001 &1716156096
 PrefabInstance:
   m_ObjectHideFlags: 0
@@ -162792,8 +162792,8 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: bb4245ef54721a64a9c9c0405cd83a74, type: 3}
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::DigitalTwin.Press.PressShaftAnimator
-  strokeDistance: 0.42
-  cycleDuration: 8
+  strokeDistance: 0.3
+  cycleDuration: 15
 --- !u!1001 &1890299937
 PrefabInstance:
   m_ObjectHideFlags: 0
@@ -168936,8 +168936,8 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: bb4245ef54721a64a9c9c0405cd83a74, type: 3}
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::DigitalTwin.Press.PressShaftAnimator
-  strokeDistance: 0.42
-  cycleDuration: 8
+  strokeDistance: 0.3
+  cycleDuration: 15
 --- !u!1 &1957025066
 GameObject:
   m_ObjectHideFlags: 0
@@ -172339,8 +172339,8 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: bb4245ef54721a64a9c9c0405cd83a74, type: 3}
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::DigitalTwin.Press.PressShaftAnimator
-  strokeDistance: 0.42
-  cycleDuration: 8
+  strokeDistance: 0.3
+  cycleDuration: 15
 --- !u!1 &2017023120
 GameObject:
   m_ObjectHideFlags: 0

@@ -8,10 +8,10 @@ namespace DigitalTwin.Press
     public class PressShaftAnimator : MonoBehaviour
     {
         [Tooltip("샤프트가 아래로 내려가는 최대 거리입니다. (기본값: 0.42)")]
-        public float strokeDistance = 0.42f;
+        public float strokeDistance = 0.3f;
         
         [Tooltip("한 사이클(내려갔다 올라오기까지)에 걸리는 총 시간(초)입니다.")]
-        public float cycleDuration = 8f;
+        public float cycleDuration = 15f;
 
         private Vector3 retractedPosition;
         private Vector3 pressedPosition;
