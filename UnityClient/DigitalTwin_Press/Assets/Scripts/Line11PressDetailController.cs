@@ -132,6 +132,10 @@ namespace DigitalTwin.Line11
         private readonly float[] flowHistory = new float[24];
         private readonly float[] velocityHistory = new float[24];
         private readonly float[] pressureHistory = new float[24];
+        private readonly float[] line11FlowHistory = new float[24];
+        private readonly float[] line11VelocityHistory = new float[24];
+        private readonly float[] line11PressureHistory = new float[24];
+        private bool line11HistoryAvailable;
         private float lastHistoryUpdate;
         private int selectedPipeIndex;
         private int warningAlarmCount = 2;
@@ -160,6 +164,7 @@ namespace DigitalTwin.Line11
         private int originalSceneCameraCullingMask;
         private bool sceneCameraMaskModified;
         private string pendingViewSceneName;
+        private int selectedDashboardTab;
 
         private const int AssetPreviewLayer = 31;
 
@@ -323,7 +328,7 @@ namespace DigitalTwin.Line11
         /// <summary>
         /// Clears every value populated by the live Solver/MQTT feed.
         /// </summary>
-        public void SetAllLiveValuesToZero()
+        public void SetAllLiveValuesToZero(bool clearHistory = true)
         {
             liveDataAvailable = false;
 
@@ -344,9 +349,8 @@ namespace DigitalTwin.Line11
             warningAlarmCount = 0;
             reliefValveOpenCount = 0;
 
-            Array.Clear(flowHistory, 0, flowHistory.Length);
-            Array.Clear(velocityHistory, 0, velocityHistory.Length);
-            Array.Clear(pressureHistory, 0, pressureHistory.Length);
+            if (clearHistory)
+                ClearRealtimeHistory();
         }
 
         /// <summary>
@@ -365,13 +369,19 @@ namespace DigitalTwin.Line11
             displayedLineNumber = 11;
             simulatedLineActive = false;
             if (wasShowingSimulation)
-                SetAllLiveValuesToZero();
+            {
+                SetAllLiveValuesToZero(false);
+                RestoreLine11History();
+            }
 
             detailOpen = true;
         }
 
         public void OpenLineDetail(int lineNumber)
         {
+            if (!simulatedLineActive && displayedLineNumber == 11)
+                SaveLine11History();
+
             displayedLineNumber = Mathf.Clamp(lineNumber, 1, 16);
             if (displayedLineNumber == 11)
             {
@@ -381,8 +391,9 @@ namespace DigitalTwin.Line11
 
             simulatedLineActive = true;
             lastSimulatedSampleIndex = -1;
-            SetAllLiveValuesToZero();
+            SetAllLiveValuesToZero(false);
             UpdateSimulatedNormalCycle(true);
+            FillSimulatedHistoryFromCycle();
             detailOpen = true;
         }
 
@@ -648,8 +659,9 @@ namespace DigitalTwin.Line11
                 false);
 
             float y = 0f;
-            for (int lineNumber = 1; lineNumber <= lineCount; lineNumber++)
+            for (int displayIndex = 0; displayIndex < lineCount; displayIndex++)
             {
+                int lineNumber = GetLineNumberAtNavigationIndex(displayIndex);
                 DigitalTwin.View.FactoryTopViewCamera.FactoryStatus status =
                     topViewController != null
                         ? topViewController.GetLineStatus(lineNumber)
@@ -718,12 +730,22 @@ namespace DigitalTwin.Line11
 
             DrawColorRect(new Rect(navWidth, 0f, Screen.width - navWidth, topBarHeight), HeaderColor);
 
+            float mainHeaderWidth = Screen.width - navWidth;
+            float dashboardTabOffset = Mathf.Clamp(mainHeaderWidth * 0.27f, 220f, 300f);
             GUI.Label(
-                new Rect(navWidth + 14f, 5f, 380f, 34f),
+                new Rect(navWidth + 14f, 5f, dashboardTabOffset - 24f, 34f),
                 simulatedLineActive
-                    ? $"<  LINE {GetLineDisplayName(displayedLineNumber)}  정상 사이클"
+                    ? $"<  LINE {GetLineDisplayName(displayedLineNumber)}"
                     : $"<  LINE {GetLineDisplayName(11)}  유압 프레스",
                 smallHeaderStyle);
+
+            Rect dashboardTabs = new Rect(
+                navWidth + dashboardTabOffset,
+                5f,
+                Mathf.Max(240f, mainHeaderWidth - dashboardTabOffset - 220f),
+                36f);
+            DrawDashboardTabs(dashboardTabs);
+
             GUI.Label(
                 new Rect(Screen.width - 210f, 5f, 140f, 34f),
                 "실시간 모니터링",
@@ -748,12 +770,74 @@ namespace DigitalTwin.Line11
             float realtimeWidth = bodyWidth - pressCycleWidth - schematicWidth - gap * 2f;
 
             Rect pressCycleColumn = new Rect(bodyX, bodyY, pressCycleWidth, bodyHeight);
-            Rect schematicColumn = new Rect(pressCycleColumn.xMax + gap, bodyY, schematicWidth, bodyHeight);
-            Rect realtimeColumn = new Rect(schematicColumn.xMax + gap, bodyY, realtimeWidth, bodyHeight);
+            float rightAreaX = pressCycleColumn.xMax + gap;
+            float rightAreaWidth = schematicWidth + gap + realtimeWidth;
+            Rect schematicColumn = new Rect(
+                rightAreaX,
+                bodyY,
+                schematicWidth,
+                bodyHeight);
+            Rect realtimeColumn = new Rect(
+                schematicColumn.xMax + gap,
+                bodyY,
+                realtimeWidth,
+                bodyHeight);
 
             DrawPressCycleColumn(pressCycleColumn);
-            DrawSchematicAndMetrics(schematicColumn);
-            DrawRealtimeColumn(realtimeColumn);
+            if (selectedDashboardTab == 0)
+            {
+                DrawSchematicAndMetrics(schematicColumn);
+                DrawRealtimeColumn(realtimeColumn);
+            }
+            else
+            {
+                DrawAnalysisWaitingPanel(
+                    new Rect(rightAreaX, bodyY, rightAreaWidth, bodyHeight));
+            }
+        }
+
+        private void DrawDashboardTabs(Rect rect)
+        {
+            string[] labels = { "실시간 설비", "이상·원인 분석", "예지보전" };
+            const float gap = 4f;
+            const float horizontalPadding = 6f;
+            float availableWidth = rect.width - horizontalPadding * 2f - gap * (labels.Length - 1);
+            float buttonWidth = Mathf.Min(180f, availableWidth / labels.Length);
+            float x = rect.x + horizontalPadding;
+
+            for (int index = 0; index < labels.Length; index++)
+            {
+                GUIStyle style = selectedDashboardTab == index
+                    ? selectedViewModeButtonStyle
+                    : viewModeButtonStyle;
+                if (GUI.Button(
+                        new Rect(x, rect.y + 3f, buttonWidth, rect.height - 6f),
+                        labels[index],
+                        style))
+                {
+                    selectedDashboardTab = index;
+                }
+
+                x += buttonWidth + gap;
+            }
+        }
+
+        private void DrawAnalysisWaitingPanel(Rect rect)
+        {
+            DrawColorRect(rect, PanelColor);
+            string title = selectedDashboardTab == 1 ? "이상·원인 분석" : "예지보전";
+            string message = selectedDashboardTab == 1
+                ? "이상 점수와 추정 원인 분석 데이터 수신 대기"
+                : "잔여 수명과 정비 예측 데이터 수신 대기";
+
+            GUI.Label(
+                new Rect(rect.x + 14f, rect.y + 8f, rect.width - 28f, 28f),
+                title,
+                smallHeaderStyle);
+            GUI.Label(
+                new Rect(rect.x + 14f, rect.y + 48f, rect.width - 28f, 30f),
+                message,
+                tableHeaderStyle);
         }
 
         private void DrawPressCycleColumn(Rect column)
@@ -779,12 +863,14 @@ namespace DigitalTwin.Line11
             DrawColorRect(rect, PanelColor);
             GUI.Label(
                 new Rect(rect.x + 12f, rect.y + 6f, rect.width - 24f, 26f),
-                "프레스 운전 상태",
+                "설비 상태",
                 smallHeaderStyle);
 
+            DigitalTwin.View.FactoryTopViewCamera.FactoryStatus equipmentStatus =
+                DigitalTwin.View.FactoryTopViewCamera.FactoryStatus.Normal;
             Rect statusChip = new Rect(rect.x + 12f, rect.y + 38f, rect.width - 24f, 26f);
-            DrawColorRect(statusChip, SuccessColor);
-            GUI.Label(statusChip, "운전 중", operatingStatusStyle);
+            DrawColorRect(statusChip, GetDetailStatusColor(equipmentStatus));
+            GUI.Label(statusChip, GetDetailStatusText(equipmentStatus), operatingStatusStyle);
         }
 
         private void DrawRamPositionPanel(Rect rect)
@@ -1005,7 +1091,19 @@ namespace DigitalTwin.Line11
 
         private float GetSimulatedCycleElapsed()
         {
-            return Mathf.Max(0f, Time.unscaledTime - simulatedCycleEpochTime);
+            float elapsed = Mathf.Max(0f, Time.unscaledTime - simulatedCycleEpochTime);
+            if (displayedLineNumber == 11 || normalCycleSamples.Count == 0)
+                return elapsed;
+
+            // Every simulated line shares the same normal-cycle CSV, but starts at a
+            // deterministic phase so adjacent lines do not show identical values.
+            int simulatedLineOrdinal = displayedLineNumber > 11
+                ? displayedLineNumber - 2
+                : displayedLineNumber - 1;
+            int wholeSecondOffset =
+                simulatedLineOrdinal * 3 % normalCycleSamples.Count;
+            float fractionalOffset = simulatedLineOrdinal % 5 * 0.17f;
+            return elapsed + wholeSecondOffset + fractionalOffset;
         }
 
         private int CountCycleModeSamples(string activeMode)
@@ -1282,7 +1380,10 @@ namespace DigitalTwin.Line11
                 return;
 
             selectedPipeIndex = clampedIndex;
-            InitializeRealtimeHistory();
+            if (simulatedLineActive)
+                FillSimulatedHistoryFromCycle();
+            else
+                InitializeRealtimeHistory();
         }
 
         private void DrawChart(
@@ -1376,6 +1477,86 @@ namespace DigitalTwin.Line11
                 pressureHistory[index] = basePressure +
                     Mathf.Sin(index * 0.47f + 1.4f) * Mathf.Max(1f, basePressure * 0.06f);
             }
+        }
+
+        private void FillSimulatedHistoryFromCycle()
+        {
+            if (normalCycleSamples.Count == 0)
+            {
+                InitializeRealtimeHistory();
+                return;
+            }
+
+            int currentSampleIndex =
+                Mathf.FloorToInt(GetSimulatedCycleElapsed()) % normalCycleSamples.Count;
+            int oldestOffset = flowHistory.Length - 1;
+
+            for (int historyIndex = 0; historyIndex < flowHistory.Length; historyIndex++)
+            {
+                int sampleIndex = currentSampleIndex - oldestOffset + historyIndex;
+                sampleIndex %= normalCycleSamples.Count;
+                if (sampleIndex < 0)
+                    sampleIndex += normalCycleSamples.Count;
+
+                NormalCycleSample sample = normalCycleSamples[sampleIndex];
+                switch (Mathf.Clamp(selectedPipeIndex, 0, 3))
+                {
+                    case 0:
+                        flowHistory[historyIndex] = sample.Flow;
+                        velocityHistory[historyIndex] = sample.SuctionVelocity;
+                        pressureHistory[historyIndex] = sample.PumpInPressure;
+                        break;
+                    case 1:
+                        flowHistory[historyIndex] = sample.Flow;
+                        velocityHistory[historyIndex] = sample.PressureVelocity;
+                        pressureHistory[historyIndex] = sample.ValvePPressure;
+                        break;
+                    case 2:
+                        flowHistory[historyIndex] = sample.Flow;
+                        velocityHistory[historyIndex] = sample.ReturnVelocity;
+                        pressureHistory[historyIndex] = sample.ValveTPressure;
+                        break;
+                    default:
+                        flowHistory[historyIndex] = sample.ReliefOpen ? sample.Flow : 0f;
+                        velocityHistory[historyIndex] = sample.ReliefVelocity;
+                        pressureHistory[historyIndex] = sample.ValvePPressure;
+                        break;
+                }
+            }
+
+            lastHistoryUpdate = Time.unscaledTime;
+        }
+
+        private void SaveLine11History()
+        {
+            if (!liveDataAvailable)
+                return;
+
+            Array.Copy(flowHistory, line11FlowHistory, flowHistory.Length);
+            Array.Copy(velocityHistory, line11VelocityHistory, velocityHistory.Length);
+            Array.Copy(pressureHistory, line11PressureHistory, pressureHistory.Length);
+            line11HistoryAvailable = true;
+        }
+
+        private void RestoreLine11History()
+        {
+            if (!line11HistoryAvailable)
+            {
+                ClearRealtimeHistory();
+                return;
+            }
+
+            Array.Copy(line11FlowHistory, flowHistory, flowHistory.Length);
+            Array.Copy(line11VelocityHistory, velocityHistory, velocityHistory.Length);
+            Array.Copy(line11PressureHistory, pressureHistory, pressureHistory.Length);
+            lastHistoryUpdate = Time.unscaledTime;
+        }
+
+        private void ClearRealtimeHistory()
+        {
+            Array.Clear(flowHistory, 0, flowHistory.Length);
+            Array.Clear(velocityHistory, 0, velocityHistory.Length);
+            Array.Clear(pressureHistory, 0, pressureHistory.Length);
         }
 
         private void UpdateRealtimeHistory()
@@ -1662,7 +1843,7 @@ namespace DigitalTwin.Line11
             switch (status)
             {
                 case DigitalTwin.View.FactoryTopViewCamera.FactoryStatus.Critical:
-                    return "치명";
+                    return "이상";
                 case DigitalTwin.View.FactoryTopViewCamera.FactoryStatus.Caution:
                     return "주의";
                 default:
@@ -1682,6 +1863,30 @@ namespace DigitalTwin.Line11
             char column = (char)('A' + zeroBased % 4);
             int row = zeroBased / 4 + 1;
             return $"{column}{row}";
+        }
+
+        private int GetLineNumberAtNavigationIndex(int displayIndex)
+        {
+            int columnIndex = Mathf.Clamp(displayIndex / 4, 0, 3);
+            int rowNumber = Mathf.Clamp(displayIndex % 4 + 1, 1, 4);
+            string targetDisplayName = $"{(char)('A' + columnIndex)}{rowNumber}";
+
+            if (topViewController != null)
+            {
+                for (int lineNumber = 1; lineNumber <= 16; lineNumber++)
+                {
+                    if (string.Equals(
+                            topViewController.GetLineDisplayName(lineNumber),
+                            targetDisplayName,
+                            StringComparison.Ordinal))
+                    {
+                        return lineNumber;
+                    }
+                }
+            }
+
+            // Fallback mapping: 01=A1, 02=B1, 03=C1, 04=D1, 05=A2 ...
+            return (rowNumber - 1) * 4 + columnIndex + 1;
         }
 
         private void PrepareFrameClickTarget()

@@ -446,8 +446,9 @@ namespace DigitalTwin.View
             lineScrollPosition = GUI.BeginScrollView(viewport, lineScrollPosition, content, false, false);
 
             float y = 0f;
-            for (int lineNumber = 1; lineNumber <= LineCount; lineNumber++)
+            for (int displayIndex = 0; displayIndex < LineCount; displayIndex++)
             {
+                int lineNumber = GetLineNumberAtNavigationIndex(displayIndex);
                 FactoryStatus status = lineStatuses[lineNumber - 1];
                 Rect row = new Rect(0f, y, content.width, rowHeight);
                 GUIStyle rowStyle = selectedLineNumber == lineNumber
@@ -473,6 +474,21 @@ namespace DigitalTwin.View
             GUI.Label(new Rect(10f, Screen.height - 50f, NavigationWidth - 20f, 18f),
                 "시점 변경", legendStyle);
             DrawViewModeButtons(new Rect(10f, Screen.height - 32f, NavigationWidth - 20f, 28f));
+        }
+
+        private int GetLineNumberAtNavigationIndex(int displayIndex)
+        {
+            int columnIndex = Mathf.Clamp(displayIndex / 4, 0, 3);
+            int rowNumber = Mathf.Clamp(displayIndex % 4 + 1, 1, 4);
+            string targetDisplayName = $"{(char)('A' + columnIndex)}{rowNumber}";
+
+            for (int lineNumber = 1; lineNumber <= LineCount; lineNumber++)
+            {
+                if (GetLineDisplayName(lineNumber) == targetDisplayName)
+                    return lineNumber;
+            }
+
+            return (rowNumber - 1) * 4 + columnIndex + 1;
         }
 
         private void DrawViewModeButtons(Rect rect)
@@ -609,7 +625,7 @@ namespace DigitalTwin.View
             switch (status)
             {
                 case FactoryStatus.Critical:
-                    return "치명";
+                    return "이상";
                 case FactoryStatus.Caution:
                     return "주의";
                 default:
