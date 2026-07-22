@@ -118,6 +118,8 @@ namespace DigitalTwin.Line11
         private GUIStyle selectedDetailNavigationButtonStyle;
         private GUIStyle detailNavigationLabelStyle;
         private GUIStyle detailNavigationStatusStyle;
+        private GUIStyle viewModeButtonStyle;
+        private GUIStyle selectedViewModeButtonStyle;
         private Texture2D buttonNormalTexture;
         private Texture2D buttonHoverTexture;
         private Texture2D buttonActiveTexture;
@@ -157,6 +159,7 @@ namespace DigitalTwin.Line11
         private Vector3 shaftPressedPosition;
         private int originalSceneCameraCullingMask;
         private bool sceneCameraMaskModified;
+        private string pendingViewSceneName;
 
         private const int AssetPreviewLayer = 31;
 
@@ -432,6 +435,22 @@ namespace DigitalTwin.Line11
             if (!initialized)
                 return;
 
+            if (!string.IsNullOrEmpty(pendingViewSceneName))
+            {
+                string sceneName = pendingViewSceneName;
+                pendingViewSceneName = null;
+
+                if (!Application.CanStreamedLevelBeLoaded(sceneName))
+                {
+                    Debug.LogError($"[시점 변경] Build Settings에서 씬을 찾을 수 없습니다: {sceneName}");
+                    return;
+                }
+
+                Debug.Log($"[시점 변경] {SceneManager.GetActiveScene().name} → {sceneName}");
+                SceneManager.LoadSceneAsync(sceneName, LoadSceneMode.Single);
+                return;
+            }
+
             if (line11Root == null && Time.frameCount % 30 == 0)
                 TryBindLine11();
 
@@ -530,31 +549,45 @@ namespace DigitalTwin.Line11
                 return;
             }
 
-            float sidebarWidth = detailOpen ? 54f : 150f;
+            const float sidebarWidth = 210f;
             sidebarGuiRect = new Rect(0f, 0f, sidebarWidth, Screen.height);
-            DrawColorRect(sidebarGuiRect, SidebarColor);
+            line11ButtonGuiRect = Rect.zero;
+            DrawDetailLineNavigation(sidebarGuiRect);
+        }
 
-            GUI.Label(
-                new Rect(6f, 8f, sidebarWidth - 12f, 32f),
-                detailOpen ? "DT" : "디지털 트윈",
-                detailOpen ? pressureStyle : smallHeaderStyle);
+        private void DrawViewModeButtons(Rect rect)
+        {
+            const float gap = 4f;
+            float buttonWidth = (rect.width - gap) * 0.5f;
+            bool isTopView = SceneManager.GetActiveScene().name == "FactoryTopView";
+            GUIStyle topStyle = isTopView ? selectedViewModeButtonStyle : viewModeButtonStyle;
+            GUIStyle freeStyle = isTopView ? viewModeButtonStyle : selectedViewModeButtonStyle;
 
-            line11ButtonGuiRect = new Rect(6f, 68f, sidebarWidth - 12f, 50f);
-            if (GUI.Button(
-                    line11ButtonGuiRect,
-                    detailOpen ? $"L{displayedLineNumber:00}" : "라인11",
-                    lineButtonStyle))
+            if (GUI.Button(new Rect(rect.x, rect.y, buttonWidth, rect.height), "탑뷰", topStyle))
+                ChangeViewScene("FactoryTopView");
+            if (GUI.Button(new Rect(rect.x + buttonWidth + gap, rect.y, buttonWidth, rect.height),
+                    "자유 시점", freeStyle))
             {
-                OpenDetail();
+                ChangeViewScene("FactorySceneSample");
+            }
+        }
+
+        private void ChangeViewScene(string sceneName)
+        {
+            if (SceneManager.GetActiveScene().name == sceneName)
+            {
+                CloseDetail();
+                if (sceneName == "FactoryTopView")
+                {
+                    if (topViewController == null)
+                        topViewController = FindAnyObjectByType<DigitalTwin.View.FactoryTopViewCamera>();
+                    if (topViewController != null)
+                        topViewController.SelectLine(0);
+                }
+                return;
             }
 
-            if (!detailOpen)
-            {
-                GUI.Label(
-                    new Rect(10f, 126f, sidebarWidth - 20f, 26f),
-                    "유압 프레스",
-                    subtitleStyle);
-            }
+            pendingViewSceneName = sceneName;
         }
 
         private void DrawDetailLineNavigation(Rect panel)
@@ -586,17 +619,22 @@ namespace DigitalTwin.Line11
 
             DrawDetailStatusLegend(new Rect(10f, 107f, panel.width - 20f, 25f));
 
-            Rect allButton = new Rect(10f, 137f, panel.width - 20f, 38f);
-            if (GUI.Button(allButton, "전체 라인 보기", detailNavigationButtonStyle))
+            bool showAllLinesButton = detailOpen;
+            if (showAllLinesButton)
             {
-                CloseDetail();
-                if (topViewController != null)
-                    topViewController.SelectLine(0);
-                return;
+                Rect allButton = new Rect(10f, 137f, panel.width - 20f, 38f);
+                if (GUI.Button(allButton, "전체 라인 보기", detailNavigationButtonStyle))
+                {
+                    CloseDetail();
+                    if (topViewController != null)
+                        topViewController.SelectLine(0);
+                    return;
+                }
             }
 
-            Rect viewport = new Rect(8f, 183f, panel.width - 12f,
-                Mathf.Max(40f, panel.height - 191f));
+            float viewportTop = showAllLinesButton ? 183f : 137f;
+            Rect viewport = new Rect(8f, viewportTop, panel.width - 12f,
+                Mathf.Max(40f, panel.height - viewportTop - 56f));
             const float rowHeight = 38f;
             const float rowGap = 4f;
             const int lineCount = 16;
@@ -621,7 +659,7 @@ namespace DigitalTwin.Line11
                     ? selectedDetailNavigationButtonStyle
                     : detailNavigationButtonStyle;
 
-                if (GUI.Button(row, $"라인 {lineNumber:00}", rowStyle))
+                if (GUI.Button(row, $"라인 {GetLineDisplayName(lineNumber)}", rowStyle))
                 {
                     if (topViewController != null)
                         topViewController.SelectLine(lineNumber);
@@ -643,6 +681,9 @@ namespace DigitalTwin.Line11
             }
 
             GUI.EndScrollView();
+            GUI.Label(new Rect(10f, panel.yMax - 50f, panel.width - 20f, 18f),
+                "시점 변경", detailNavigationLabelStyle);
+            DrawViewModeButtons(new Rect(10f, panel.yMax - 32f, panel.width - 20f, 28f));
         }
 
         private void DrawDetailStatusLegend(Rect rect)
@@ -680,8 +721,8 @@ namespace DigitalTwin.Line11
             GUI.Label(
                 new Rect(navWidth + 14f, 5f, 380f, 34f),
                 simulatedLineActive
-                    ? $"<  LINE {displayedLineNumber:00}  정상 사이클"
-                    : "<  LINE11 유압 프레스",
+                    ? $"<  LINE {GetLineDisplayName(displayedLineNumber)}  정상 사이클"
+                    : $"<  LINE {GetLineDisplayName(11)}  유압 프레스",
                 smallHeaderStyle);
             GUI.Label(
                 new Rect(Screen.width - 210f, 5f, 140f, 34f),
@@ -1415,7 +1456,8 @@ namespace DigitalTwin.Line11
             // ready flag but without styles that were added in the new script version.
             if (guiStylesReady && smallHeaderStyle != null && lineButtonStyle != null &&
                 closeButtonStyle != null && pipeButtonStyle != null && operatingStatusStyle != null &&
-                detailNavigationButtonStyle != null && normalStatusTexture != null)
+                detailNavigationButtonStyle != null && normalStatusTexture != null &&
+                viewModeButtonStyle != null && selectedViewModeButtonStyle != null)
                 return;
 
             guiStylesReady = true;
@@ -1483,6 +1525,25 @@ namespace DigitalTwin.Line11
                 11, FontStyle.Normal, MutedTextColor, TextAnchor.MiddleLeft);
             detailNavigationStatusStyle = CreateGuiLabelStyle(
                 12, FontStyle.Bold, SuccessColor, TextAnchor.MiddleLeft);
+
+            viewModeButtonStyle = new GUIStyle(GUI.skin.button)
+            {
+                font = uiFont,
+                fontSize = 12,
+                fontStyle = FontStyle.Bold,
+                alignment = TextAnchor.MiddleCenter,
+                padding = new RectOffset(2, 2, 0, 0)
+            };
+            viewModeButtonStyle.normal.background = detailNavigationRowTexture;
+            viewModeButtonStyle.hover.background = detailNavigationHoverTexture;
+            viewModeButtonStyle.active.background = detailNavigationSelectedTexture;
+            viewModeButtonStyle.normal.textColor = TextColor;
+            viewModeButtonStyle.hover.textColor = Color.white;
+            viewModeButtonStyle.active.textColor = Color.white;
+
+            selectedViewModeButtonStyle = new GUIStyle(viewModeButtonStyle);
+            selectedViewModeButtonStyle.normal.background = detailNavigationSelectedTexture;
+            selectedViewModeButtonStyle.normal.textColor = Color.white;
 
             closeButtonStyle = new GUIStyle(lineButtonStyle)
             {
@@ -1607,6 +1668,20 @@ namespace DigitalTwin.Line11
                 default:
                     return "정상";
             }
+        }
+
+        private string GetLineDisplayName(int lineNumber)
+        {
+            if (topViewController == null)
+                topViewController = FindAnyObjectByType<DigitalTwin.View.FactoryTopViewCamera>();
+
+            if (topViewController != null)
+                return topViewController.GetLineDisplayName(lineNumber);
+
+            int zeroBased = Mathf.Clamp(lineNumber - 1, 0, 15);
+            char column = (char)('A' + zeroBased % 4);
+            int row = zeroBased / 4 + 1;
+            return $"{column}{row}";
         }
 
         private void PrepareFrameClickTarget()
@@ -2268,6 +2343,13 @@ namespace DigitalTwin.Line11
 
     internal static class Line11PressDetailBootstrap
     {
+        [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.BeforeSceneLoad)]
+        private static void RegisterSceneLoadCallback()
+        {
+            SceneManager.sceneLoaded -= HandleSceneLoaded;
+            SceneManager.sceneLoaded += HandleSceneLoaded;
+        }
+
         [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterSceneLoad)]
         private static void CreateForCurrentScene()
         {
@@ -2278,6 +2360,11 @@ namespace DigitalTwin.Line11
             Line11PressDetailController controller =
                 controllerObject.AddComponent<Line11PressDetailController>();
             controller.Initialize();
+        }
+
+        private static void HandleSceneLoaded(Scene scene, LoadSceneMode mode)
+        {
+            CreateForCurrentScene();
         }
     }
 }

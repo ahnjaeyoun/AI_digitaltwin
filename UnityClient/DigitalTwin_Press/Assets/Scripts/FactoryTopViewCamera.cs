@@ -53,6 +53,7 @@ namespace DigitalTwin.View
         private readonly FactoryStatus[] lineStatuses = new FactoryStatus[LineCount];
         private readonly Vector3[] lineMarkerWorldPositions = new Vector3[LineCount];
         private readonly bool[] hasLineMarkerPosition = new bool[LineCount];
+        private readonly string[] lineDisplayNames = new string[LineCount];
         private Vector2 lineScrollPosition;
         private GUIStyle navigationTitleStyle;
         private GUIStyle navigationButtonStyle;
@@ -62,6 +63,8 @@ namespace DigitalTwin.View
         private GUIStyle legendStyle;
         private GUIStyle mapMarkerLabelStyle;
         private GUIStyle mapMarkerButtonStyle;
+        private GUIStyle viewModeButtonStyle;
+        private GUIStyle selectedViewModeButtonStyle;
         private Texture2D navigationPanelTexture;
         private Texture2D navigationRowTexture;
         private Texture2D navigationHoverTexture;
@@ -71,17 +74,34 @@ namespace DigitalTwin.View
         private Texture2D cautionStatusTexture;
         private Texture2D criticalStatusTexture;
 
+        [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.BeforeSceneLoad)]
+        private static void RegisterSceneLoadCallback()
+        {
+            SceneManager.sceneLoaded -= HandleSceneLoaded;
+            SceneManager.sceneLoaded += HandleSceneLoaded;
+        }
+
         [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterSceneLoad)]
         private static void CreateForTopViewScene()
         {
-            Scene activeScene = SceneManager.GetActiveScene();
-            if (!activeScene.IsValid() || activeScene.name != TopViewSceneName)
+            EnsureControllerForScene(SceneManager.GetActiveScene());
+        }
+
+        private static void HandleSceneLoaded(Scene scene, LoadSceneMode mode)
+        {
+            EnsureControllerForScene(scene);
+        }
+
+        private static void EnsureControllerForScene(Scene scene)
+        {
+            if (!scene.IsValid() || scene.name != TopViewSceneName)
                 return;
 
             if (FindAnyObjectByType<FactoryTopViewCamera>() != null)
                 return;
 
             GameObject controllerObject = new GameObject("Factory Top View Controller");
+            SceneManager.MoveGameObjectToScene(controllerObject, scene);
             controllerObject.AddComponent<FactoryTopViewCamera>();
         }
 
@@ -231,7 +251,10 @@ namespace DigitalTwin.View
         private void InitializeLineStatuses()
         {
             for (int index = 0; index < lineStatuses.Length; index++)
+            {
                 lineStatuses[index] = FactoryStatus.Normal;
+                lineDisplayNames[index] = GetFallbackLineDisplayName(index + 1);
+            }
         }
 
         private void ApplyTopView()
@@ -273,6 +296,60 @@ namespace DigitalTwin.View
                 lineMarkerWorldPositions[index] = bounds.center;
                 hasLineMarkerPosition[index] = true;
             }
+
+            AssignLineDisplayNamesByPosition();
+        }
+
+        private void AssignLineDisplayNamesByPosition()
+        {
+            List<int> validLines = new List<int>();
+            for (int index = 0; index < LineCount; index++)
+            {
+                if (hasLineMarkerPosition[index])
+                    validLines.Add(index);
+                else
+                    lineDisplayNames[index] = GetFallbackLineDisplayName(index + 1);
+            }
+
+            if (validLines.Count != LineCount)
+                return;
+
+            int[] columnByLine = new int[LineCount];
+            int[] rowByLine = new int[LineCount];
+            validLines.Sort((left, right) =>
+                lineMarkerWorldPositions[left].x.CompareTo(lineMarkerWorldPositions[right].x));
+            for (int rank = 0; rank < validLines.Count; rank++)
+                columnByLine[validLines[rank]] = rank / 4;
+
+            validLines.Sort((left, right) =>
+                lineMarkerWorldPositions[right].z.CompareTo(lineMarkerWorldPositions[left].z));
+            for (int rank = 0; rank < validLines.Count; rank++)
+                rowByLine[validLines[rank]] = rank / 4 + 1;
+
+            for (int index = 0; index < LineCount; index++)
+            {
+                char column = (char)('A' + Mathf.Clamp(columnByLine[index], 0, 3));
+                lineDisplayNames[index] = $"{column}{Mathf.Clamp(rowByLine[index], 1, 4)}";
+            }
+        }
+
+        private static string GetFallbackLineDisplayName(int lineNumber)
+        {
+            int zeroBased = Mathf.Clamp(lineNumber - 1, 0, LineCount - 1);
+            char column = (char)('A' + zeroBased % 4);
+            int row = zeroBased / 4 + 1;
+            return $"{column}{row}";
+        }
+
+        public string GetLineDisplayName(int lineNumber)
+        {
+            if (lineNumber < 1 || lineNumber > LineCount)
+                return GetFallbackLineDisplayName(lineNumber);
+
+            string displayName = lineDisplayNames[lineNumber - 1];
+            return string.IsNullOrEmpty(displayName)
+                ? GetFallbackLineDisplayName(lineNumber)
+                : displayName;
         }
 
         private void DrawFactoryStatusMarkers()
@@ -318,7 +395,7 @@ namespace DigitalTwin.View
                 if (GUI.Button(
                         clickArea,
                         new GUIContent(string.Empty,
-                            $"라인 {index + 1:00} - {GetStatusText(status)}"),
+                            $"라인 {GetLineDisplayName(index + 1)} - {GetStatusText(status)}"),
                         mapMarkerButtonStyle))
                 {
                     SelectLine(index + 1);
@@ -327,7 +404,7 @@ namespace DigitalTwin.View
                 Rect label = new Rect(marker.center.x - 27f, marker.yMax + 1f, 54f, 18f);
                 DrawColorRect(label, new Color32(8, 18, 33, 220));
                 mapMarkerLabelStyle.normal.textColor = GetStatusColor(status);
-                GUI.Label(label, $"L{index + 1:00}", mapMarkerLabelStyle);
+                GUI.Label(label, GetLineDisplayName(index + 1), mapMarkerLabelStyle);
             }
         }
 
@@ -361,7 +438,7 @@ namespace DigitalTwin.View
             if (selectedLineNumber == 0)
                 GUI.DrawTexture(new Rect(allButton.x, allButton.y, 3f, allButton.height), accentTexture);
 
-            Rect viewport = new Rect(8f, 183f, NavigationWidth - 12f, Mathf.Max(40f, Screen.height - 191f));
+            Rect viewport = new Rect(8f, 183f, NavigationWidth - 12f, Mathf.Max(40f, Screen.height - 239f));
             const float rowHeight = 38f;
             const float rowGap = 4f;
             float contentHeight = LineCount * (rowHeight + rowGap) - rowGap;
@@ -377,7 +454,7 @@ namespace DigitalTwin.View
                     ? selectedNavigationButtonStyle
                     : navigationButtonStyle;
 
-                if (GUI.Button(row, $"라인 {lineNumber:00}", rowStyle))
+                if (GUI.Button(row, $"라인 {GetLineDisplayName(lineNumber)}", rowStyle))
                     SelectLine(lineNumber);
 
                 GUI.DrawTexture(new Rect(row.x + 10f, row.y + 11f, 16f, 16f),
@@ -393,6 +470,27 @@ namespace DigitalTwin.View
             }
 
             GUI.EndScrollView();
+            GUI.Label(new Rect(10f, Screen.height - 50f, NavigationWidth - 20f, 18f),
+                "시점 변경", legendStyle);
+            DrawViewModeButtons(new Rect(10f, Screen.height - 32f, NavigationWidth - 20f, 28f));
+        }
+
+        private void DrawViewModeButtons(Rect rect)
+        {
+            const float gap = 4f;
+            float buttonWidth = (rect.width - gap) * 0.5f;
+
+            if (GUI.Button(new Rect(rect.x, rect.y, buttonWidth, rect.height),
+                    "탑뷰", selectedViewModeButtonStyle))
+            {
+                SelectLine(0);
+            }
+
+            if (GUI.Button(new Rect(rect.x + buttonWidth + gap, rect.y, buttonWidth, rect.height),
+                    "자유 시점", viewModeButtonStyle))
+            {
+                SceneManager.LoadScene("FactorySceneSample", LoadSceneMode.Single);
+            }
         }
 
         private void DrawStatusLegend(Rect rect)
@@ -523,7 +621,8 @@ namespace DigitalTwin.View
         {
             if (navigationTitleStyle != null && navigationButtonStyle != null &&
                 normalStatusTexture != null && mapMarkerLabelStyle != null &&
-                mapMarkerButtonStyle != null)
+                mapMarkerButtonStyle != null && viewModeButtonStyle != null &&
+                selectedViewModeButtonStyle != null)
             {
                 return;
             }
@@ -588,6 +687,16 @@ namespace DigitalTwin.View
 
             selectedNavigationButtonStyle = new GUIStyle(navigationButtonStyle);
             selectedNavigationButtonStyle.normal.background = navigationSelectedTexture;
+
+            viewModeButtonStyle = new GUIStyle(navigationButtonStyle)
+            {
+                fontSize = 12,
+                alignment = TextAnchor.MiddleCenter,
+                padding = new RectOffset(2, 2, 0, 0)
+            };
+            selectedViewModeButtonStyle = new GUIStyle(viewModeButtonStyle);
+            selectedViewModeButtonStyle.normal.background = navigationSelectedTexture;
+            selectedViewModeButtonStyle.normal.textColor = Color.white;
 
             mapMarkerLabelStyle = new GUIStyle(navigationTitleStyle)
             {

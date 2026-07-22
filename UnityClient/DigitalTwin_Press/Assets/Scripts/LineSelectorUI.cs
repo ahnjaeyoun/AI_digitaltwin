@@ -16,6 +16,11 @@ namespace DigitalTwin.LineView
 
         private void OnGUI()
         {
+            DigitalTwin.Line11.Line11PressDetailController detailController =
+                DigitalTwin.Line11.Line11PressDetailController.Instance;
+            if (detailController != null && detailController.IsOpen)
+                return;
+
             InitStyles();
 
             float screenWidth = Screen.width;
