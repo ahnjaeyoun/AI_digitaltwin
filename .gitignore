@@ -3,3 +3,6 @@ dataset/
 docs/
 .vscode/
 .ipynb_checkpoints/
+__pycache__/
+ab_solver/*.csv
+ab_solver/*.log

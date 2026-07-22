@@ -1,6 +1,6 @@
 import csv, random, math, sys
 random.seed(42)
-INP=r'C:\Users\vnm19\바탕화면\press_dataes\realtime_input_1000cycles_normal_relief_mixed.csv'
+INP=r'C:\pipes_press\dataset\realtime_input_1000cycles_normal_relief_mixed.csv'
 rows=list(csv.DictReader(open(INP,encoding='utf-8-sig')))
 from collections import defaultdict, OrderedDict
 cyc=OrderedDict(); ctype=defaultdict(set)
@@ -13,6 +13,8 @@ print('normal templates:',len(templates),file=sys.stderr)
 def gv(r,k):
     try: return float(r[k])
     except: return 0.0
+# 학습용 준균형 구성(2026-07-22 복원 — 90:10 검증셋 역할은 gen_trajectories.py twin 세트가 대체).
+# 이 설정+seed 42가 dataset/scenarios.csv(145만 행)의 원천이다.
 COUNTS={'normal':30000,'pump_wear':7000,'suction_clog':7000,'line_clog':7000,'valve_stuck':7000,
         'valve_int_leak':7000,'seal_leak':7000,'ext_leak':7000,'relief_early':7000,'relief_stuck':7000,'overheat':7000}
 SEV=['initial','moderate','severe']

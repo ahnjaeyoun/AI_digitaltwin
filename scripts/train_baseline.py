@@ -15,7 +15,7 @@ from sklearn.model_selection import train_test_split
 sys.path.insert(0, str(Path(__file__).parent))
 from build_dataset import add_engineered_features
 
-DATA_PATH = r"C:\pipes_press\dataset\final_training_dataset_v3.csv"
+DATA_PATH = r"C:\pipes_press\dataset\final_training_dataset_v4.csv"
 MODEL_OUT = r"C:\pipes_press\models\baseline_lgbm.joblib"
 
 NUMERIC_FEATURES = [
