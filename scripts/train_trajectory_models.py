@@ -34,6 +34,56 @@ from train_baseline import CATEGORICAL_FEATURES, FEATURE_COLS, NUMERIC_FEATURES
 DATA_TPL = r"C:\pipes_press\dataset\traj_dataset_{s}.csv"
 CLS_MODEL_OUT = r"C:\pipes_press\models\traj_classifier_lgbm.joblib"
 
+# 사이클 간 추세 피처 — 라벨링(trajectory_labels.CLASS_SIG)과 같은 계열의 사이클 감시 신호.
+# *_r = 지령(보압 목표압·rpm) OLS 회귀 잔차(σ 15~20배 감소 확인된 정규화, 지령은 관측 가능하므로 누수 아님)
+TREND_NORM_SIGS = ["flow_per_rpm", "down_min_pump_in", "down_pump_out", "up_flow"]
+TREND_SIGS = ["flow_per_rpm_r", "down_min_pump_in_r", "down_pump_out_r", "up_flow_r",
+              "down_max_tgt_err", "frd_max", "mean_temp"]
+TREND_FEATURES = [f"tf_{s}_{k}" for s in TREND_SIGS for k in ("last", "rm5", "slope", "d0")]
+
+
+def add_trend_features(df, coefs=None):
+    """사이클 단위 감시 신호 → 지령 회귀 잔차 → '직전 완료 사이클까지'의 추세를 행 단위로 병합.
+    last=직전 사이클 값, rm5=최근 5사이클 평균, slope=최근 추세 기울기(rm3 차분),
+    d0=궤적 초기 3사이클 베이스라인 대비 드리프트. 전부 관측 가능량에서 인과적으로 계산되므로
+    서빙에서는 사이클 종료 시 갱신하는 버퍼로 동일 재현 가능. coefs는 train 정상 궤적에서
+    적합해 test/twin에 재사용(세트 간 동일 기준)."""
+    key = ["trajectory_id", "cycle_in_traj"]
+    t = df.assign(_frd=df["flow_rate_L_min"] - df["return_flow_L_min"])
+    d = t[t["cycle_phase"] == "downstroke"].groupby(key)
+    c = pd.DataFrame({"down_mean_flow": d["flow_rate_L_min"].mean(),
+                      "down_min_pump_in": d["pump_in_pressure_bar"].min(),
+                      "down_pump_out": d["pump_out_pressure_bar"].mean(),
+                      "down_max_tgt_err": d["target_pressure_error_bar"].max(),
+                      "rpm": d["pump_rpm"].mean()})
+    c["up_flow"] = t[t["cycle_phase"] == "upstroke"].groupby(key)["flow_rate_L_min"].mean()
+    c["tgt_hold"] = t[t["cycle_phase"] == "pressure_hold"].groupby(key)["target_pressure_bar"].mean()
+    c["mean_temp"] = t.groupby(key)["temperature_c"].mean()
+    c["frd_max"] = t.groupby(key)["_frd"].max()
+    c["flow_per_rpm"] = c["down_mean_flow"] / c["rpm"] * 1000
+    c["_normal"] = t.groupby(key)["gt_traj_class"].first() == "normal"
+    c = c.reset_index().sort_values(key).reset_index(drop=True)
+
+    X = np.column_stack([np.ones(len(c)), c["tgt_hold"], c["rpm"]])
+    if coefs is None:
+        nm = c["_normal"].to_numpy()
+        coefs = {s: np.linalg.lstsq(X[nm], c.loc[nm, s], rcond=None)[0].tolist()
+                 for s in TREND_NORM_SIGS}
+    for s in TREND_NORM_SIGS:
+        c[s + "_r"] = c[s] - X @ np.asarray(coefs[s])
+
+    tid = c["trajectory_id"]
+    g = c.groupby("trajectory_id", group_keys=False)
+    for s in TREND_SIGS:
+        prev = g[s].shift(1)  # 현재 사이클은 진행 중이므로 직전 완료 사이클까지만 사용
+        rm3 = prev.groupby(tid).rolling(3, min_periods=3).mean().reset_index(level=0, drop=True)
+        c[f"tf_{s}_last"] = prev
+        c[f"tf_{s}_rm5"] = prev.groupby(tid).rolling(5, min_periods=2).mean().reset_index(level=0, drop=True)
+        c[f"tf_{s}_slope"] = (rm3 - rm3.groupby(tid).shift(7)) / 7.0
+        base = g[s].transform(lambda x: x.iloc[:3].mean())  # 궤적 초기 3사이클 = 설비별 베이스라인
+        c[f"tf_{s}_d0"] = rm3 - base
+    return df.merge(c[key + TREND_FEATURES], on=key, how="left"), coefs
+
 
 def load_set(name):
     t0 = time.time()
@@ -63,18 +113,32 @@ def stage_breakdown(df, correct):
           f"정확도 {fault.loc[latent, '_c'].mean():.3f} — 신호가 관리도 검출 하한 미만인 구간(원리적 한계)")
 
 
-def task_cls():
+def task_cls(latent="keep", trend="off", tag=""):
     train_df = load_set("train")
+    coefs = None
+    if trend == "on":
+        t0 = time.time()
+        train_df, coefs = add_trend_features(train_df)
+        print(f"trend features added ({time.time() - t0:.0f}s)")
+    feat_cols = FEATURE_COLS + (TREND_FEATURES if trend == "on" else [])
+    if latent == "drop":
+        # 잠복 구간(주입은 됐지만 신호가 검출 하한 미만 → health_stage=normal)은 정상과 물리적으로
+        # 구별 불가하므로 학습에서 제외해 결정 경계 오염을 막는다. 평가는 기존 기준 그대로 유지.
+        m = (train_df["fault_class"] != "normal") & (train_df["health_stage"] == "normal")
+        print(f"latent=drop: 잠복 구간 {m.sum():,}행 학습 제외 (전체 {len(train_df):,}행)")
+        train_df = train_df[~m]
     tr, va = traj_split(train_df)
     print(f"train traj={tr['trajectory_id'].nunique()} rows={len(tr):,} / val traj={va['trajectory_id'].nunique()} rows={len(va):,}")
     model = lgb.LGBMClassifier(objective="multiclass", n_estimators=2000, learning_rate=0.05,
                                num_leaves=63, random_state=42, n_jobs=-1)
-    model.fit(tr[FEATURE_COLS], tr["fault_class"], eval_set=[(va[FEATURE_COLS], va["fault_class"])],
+    model.fit(tr[feat_cols], tr["fault_class"], eval_set=[(va[feat_cols], va["fault_class"])],
               eval_metric="multi_logloss", categorical_feature=CATEGORICAL_FEATURES,
               callbacks=[lgb.early_stopping(30), lgb.log_evaluation(200)])
 
     test_df = load_set("test")
-    y_pred = model.predict(test_df[FEATURE_COLS])
+    if trend == "on":
+        test_df, _ = add_trend_features(test_df, coefs)
+    y_pred = model.predict(test_df[feat_cols])
     y_true = test_df["fault_class"]
     print(f"\n[test 세트] macro F1 (행 단위): {f1_score(y_true, y_pred, average='macro'):.3f}")
     print(classification_report(y_true, y_pred, digits=3))
@@ -83,15 +147,23 @@ def task_cls():
     vis = ~((test_df["fault_class"] != "normal") & (test_df["health_stage"] == "normal"))
     print(f"\n잠복 구간 제외 macro F1: {f1_score(y_true[vis], y_pred[vis], average='macro'):.3f} "
           f"(대상 {vis.sum():,}행)")
-    joblib.dump({"model": model, "feature_cols": FEATURE_COLS,
-                 "categorical_features": CATEGORICAL_FEATURES}, CLS_MODEL_OUT)
-    print(f"model saved -> {CLS_MODEL_OUT}")
+    out = model_path(tag)
+    joblib.dump({"model": model, "feature_cols": feat_cols,
+                 "categorical_features": CATEGORICAL_FEATURES, "trend_coefs": coefs}, out)
+    print(f"model saved -> {out}")
 
 
-def task_twin():
-    cls_pack = joblib.load(CLS_MODEL_OUT)
+def model_path(tag=""):
+    """tag가 있으면 실험용 모델 파일로 분리 저장해 기준 모델을 보존한다."""
+    return CLS_MODEL_OUT.replace(".joblib", f"_{tag}.joblib") if tag else CLS_MODEL_OUT
+
+
+def task_twin(latent="keep", trend="off", tag=""):
+    cls_pack = joblib.load(model_path(tag))
     df = load_set("twin")
-    df["_pred"] = cls_pack["model"].predict(df[FEATURE_COLS])
+    if cls_pack.get("trend_coefs"):
+        df, _ = add_trend_features(df, cls_pack["trend_coefs"])
+    df["_pred"] = cls_pack["model"].predict(df[cls_pack["feature_cols"]])
 
     # 사이클 단위 판정 = 15행 다수결 (스트리밍에서 사이클 종료 시점 판정에 해당)
     cyc = df.groupby(["trajectory_id", "cycle_in_traj"]).agg(
@@ -122,5 +194,10 @@ def task_twin():
 if __name__ == "__main__":
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--task", required=True, choices=["cls", "twin"])
+    ap.add_argument("--latent", choices=["keep", "drop"], default="keep",
+                    help="잠복 구간(fault인데 health_stage=normal) 행을 학습에 포함할지")
+    ap.add_argument("--trend", choices=["off", "on"], default="off",
+                    help="사이클 간 추세 피처(TREND_FEATURES) 사용 여부 (twin은 모델에 저장된 설정을 따름)")
+    ap.add_argument("--tag", default="", help="실험 태그 — 모델 파일명을 분리해 기준 모델 보존")
     args = ap.parse_args()
-    {"cls": task_cls, "twin": task_twin}[args.task]()
+    {"cls": task_cls, "twin": task_twin}[args.task](latent=args.latent, trend=args.trend, tag=args.tag)
