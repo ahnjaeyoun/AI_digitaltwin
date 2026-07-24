@@ -630,20 +630,7 @@ namespace DigitalTwin.Line11
 
             DrawDetailStatusLegend(new Rect(10f, 107f, panel.width - 20f, 25f));
 
-            bool showAllLinesButton = detailOpen;
-            if (showAllLinesButton)
-            {
-                Rect allButton = new Rect(10f, 137f, panel.width - 20f, 38f);
-                if (GUI.Button(allButton, "전체 라인 보기", detailNavigationButtonStyle))
-                {
-                    CloseDetail();
-                    if (topViewController != null)
-                        topViewController.SelectLine(0);
-                    return;
-                }
-            }
-
-            float viewportTop = showAllLinesButton ? 183f : 137f;
+            const float viewportTop = 137f;
             Rect viewport = new Rect(8f, viewportTop, panel.width - 12f,
                 Mathf.Max(40f, panel.height - viewportTop - 56f));
             const float rowHeight = 38f;
@@ -674,7 +661,7 @@ namespace DigitalTwin.Line11
                 if (GUI.Button(row, $"라인 {GetLineDisplayName(lineNumber)}", rowStyle))
                 {
                     if (topViewController != null)
-                        topViewController.SelectLine(lineNumber);
+                        topViewController.OpenLineDetailFromNavigation(lineNumber);
                     else if (lineNumber == 11)
                         OpenDetail();
                     else

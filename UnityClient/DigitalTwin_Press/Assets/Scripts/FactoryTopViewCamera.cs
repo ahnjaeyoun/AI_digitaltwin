@@ -39,12 +39,16 @@ namespace DigitalTwin.View
         private const float NavigationWidth = 210f;
         private const int LineCount = 16;
         private const float StatusMarkerSize = 38f;
+        private const float FocusViewMargin = 1.12f;
 
         private Camera topViewCamera;
         private Vector3 cameraPosition;
         private Quaternion cameraRotation;
         private float orthographicSize;
         private float farClipPlane;
+        private Rect cameraViewportRect = new Rect(0f, 0f, 1f, 1f);
+        private Rect factoryContentViewportRect = new Rect(0f, 0f, 1f, 1f);
+        private bool hasFactoryContentViewportRect;
         private bool viewReady;
         private bool factoryLightingAdjusted;
         private Bounds factoryViewBounds;
@@ -194,7 +198,9 @@ namespace DigitalTwin.View
 
             factoryViewBounds = viewBounds;
             hasFactoryViewBounds = true;
+            cameraViewportRect = new Rect(0f, 0f, 1f, 1f);
             FrameBounds(viewBounds, ViewMargin);
+            CacheFactoryContentViewportRect(viewBounds);
             Debug.Log(
                 $"[탑뷰] Line/01~16과 공장 구조를 표시합니다. 중심={viewBounds.center}, " +
                 $"범위={viewBounds.size}, 카메라 크기={orthographicSize:0.0}, " +
@@ -218,6 +224,7 @@ namespace DigitalTwin.View
                 return;
 
             EnsureNavigationStyles();
+            DrawOutsideCameraViewport();
             DrawFactoryStatusMarkers();
             DrawLineNavigation();
         }
@@ -236,8 +243,10 @@ namespace DigitalTwin.View
 
         private void FrameBounds(Bounds bounds, float margin)
         {
-            float aspect = Screen.height > 0
-                ? Mathf.Max(0.1f, Screen.width / (float)Screen.height)
+            float viewportWidth = Screen.width * Mathf.Max(0.01f, cameraViewportRect.width);
+            float viewportHeight = Screen.height * Mathf.Max(0.01f, cameraViewportRect.height);
+            float aspect = viewportHeight > 0f
+                ? Mathf.Max(0.1f, viewportWidth / viewportHeight)
                 : 16f / 9f;
             cameraRotation = Quaternion.Euler(ViewPitch, ViewYaw, 0f);
             float cameraDistance = Mathf.Max(80f, bounds.extents.magnitude * 3f);
@@ -265,7 +274,7 @@ namespace DigitalTwin.View
             topViewCamera.transform.SetPositionAndRotation(
                 cameraPosition,
                 cameraRotation);
-            topViewCamera.rect = new Rect(0f, 0f, 1f, 1f);
+            topViewCamera.rect = cameraViewportRect;
             topViewCamera.targetTexture = null;
             topViewCamera.orthographic = true;
             topViewCamera.orthographicSize = Mathf.Max(1f, orthographicSize);
@@ -359,6 +368,11 @@ namespace DigitalTwin.View
 
             for (int index = 0; index < LineCount; index++)
             {
+                // While focused, keep only the selected marker visible. Other lines can
+                // still project into the screen outside the cropped camera viewport.
+                if (selectedLineNumber != 0 && index != selectedLineNumber - 1)
+                    continue;
+
                 if (!hasLineMarkerPosition[index])
                     continue;
 
@@ -398,7 +412,11 @@ namespace DigitalTwin.View
                             $"라인 {GetLineDisplayName(index + 1)} - {GetStatusText(status)}"),
                         mapMarkerButtonStyle))
                 {
-                    SelectLine(index + 1);
+                    int clickedLineNumber = index + 1;
+                    if (selectedLineNumber == clickedLineNumber)
+                        SelectLine(clickedLineNumber);
+                    else
+                        FocusLine(clickedLineNumber);
                 }
 
                 Rect label = new Rect(marker.center.x - 27f, marker.yMax + 1f, 54f, 18f);
@@ -456,7 +474,7 @@ namespace DigitalTwin.View
                     : navigationButtonStyle;
 
                 if (GUI.Button(row, $"라인 {GetLineDisplayName(lineNumber)}", rowStyle))
-                    SelectLine(lineNumber);
+                    OpenLineDetailFromNavigation(lineNumber);
 
                 GUI.DrawTexture(new Rect(row.x + 10f, row.y + 11f, 16f, 16f),
                     GetStatusTexture(status), ScaleMode.ScaleToFit, true);
@@ -529,14 +547,22 @@ namespace DigitalTwin.View
             }
         }
 
-        public void SelectLine(int lineNumber)
+        /// <summary>
+        /// Focuses a line inside the same screen-space rectangle occupied by the
+        /// complete factory overview. Map markers use this without opening the dashboard.
+        /// </summary>
+        public void FocusLine(int lineNumber)
         {
             selectedLineNumber = Mathf.Clamp(lineNumber, 0, LineCount);
 
             if (selectedLineNumber == 0)
             {
                 if (hasFactoryViewBounds)
+                {
+                    cameraViewportRect = new Rect(0f, 0f, 1f, 1f);
                     FrameBounds(factoryViewBounds, ViewMargin);
+                    CacheFactoryContentViewportRect(factoryViewBounds);
+                }
                 return;
             }
 
@@ -545,18 +571,130 @@ namespace DigitalTwin.View
             if (selectedLine != null &&
                 TryCalculateBounds(selectedLine.GetComponentsInChildren<Renderer>(true), out Bounds lineBounds))
             {
-                FrameBounds(lineBounds, 1.42f);
+                cameraViewportRect = hasFactoryContentViewportRect
+                    ? factoryContentViewportRect
+                    : new Rect(0f, 0f, 1f, 1f);
+                FrameBounds(lineBounds, FocusViewMargin);
             }
+        }
 
+        public void SelectLine(int lineNumber)
+        {
+            FocusLine(lineNumber);
+            if (selectedLineNumber == 0)
+                return;
+
+            OpenDetailForLine(selectedLineNumber);
+        }
+
+        /// <summary>
+        /// Opens a dashboard directly from the left navigation without focusing the
+        /// top-view camera. Closing the dashboard therefore returns to the full map.
+        /// </summary>
+        public void OpenLineDetailFromNavigation(int lineNumber)
+        {
+            int targetLineNumber = Mathf.Clamp(lineNumber, 1, LineCount);
+            FocusLine(0);
+            OpenDetailForLine(targetLineNumber);
+        }
+
+        private static void OpenDetailForLine(int lineNumber)
+        {
             DigitalTwin.Line11.Line11PressDetailController detailController =
                 DigitalTwin.Line11.Line11PressDetailController.Instance;
             if (detailController != null)
             {
-                if (selectedLineNumber == 11)
+                if (lineNumber == 11)
                     detailController.OpenDetail();
                 else
-                    detailController.OpenLineDetail(selectedLineNumber);
+                    detailController.OpenLineDetail(lineNumber);
             }
+        }
+
+        private void CacheFactoryContentViewportRect(Bounds bounds)
+        {
+            if (topViewCamera == null || Screen.width <= 0 || Screen.height <= 0)
+                return;
+
+            float minimumX = float.PositiveInfinity;
+            float minimumY = float.PositiveInfinity;
+            float maximumX = float.NegativeInfinity;
+            float maximumY = float.NegativeInfinity;
+            Vector3 extents = bounds.extents;
+
+            for (int x = -1; x <= 1; x += 2)
+            {
+                for (int y = -1; y <= 1; y += 2)
+                {
+                    for (int z = -1; z <= 1; z += 2)
+                    {
+                        Vector3 corner = bounds.center + new Vector3(
+                            extents.x * x,
+                            extents.y * y,
+                            extents.z * z);
+                        Vector3 screenPoint = topViewCamera.WorldToScreenPoint(corner);
+                        if (screenPoint.z <= 0f)
+                            continue;
+
+                        minimumX = Mathf.Min(minimumX, screenPoint.x);
+                        minimumY = Mathf.Min(minimumY, screenPoint.y);
+                        maximumX = Mathf.Max(maximumX, screenPoint.x);
+                        maximumY = Mathf.Max(maximumY, screenPoint.y);
+                    }
+                }
+            }
+
+            if (!float.IsFinite(minimumX) || !float.IsFinite(minimumY) ||
+                !float.IsFinite(maximumX) || !float.IsFinite(maximumY))
+            {
+                return;
+            }
+
+            minimumX = Mathf.Clamp(minimumX, 0f, Screen.width);
+            minimumY = Mathf.Clamp(minimumY, 0f, Screen.height);
+            maximumX = Mathf.Clamp(maximumX, minimumX, Screen.width);
+            maximumY = Mathf.Clamp(maximumY, minimumY, Screen.height);
+
+            float normalizedWidth = (maximumX - minimumX) / Screen.width;
+            float normalizedHeight = (maximumY - minimumY) / Screen.height;
+            if (normalizedWidth < 0.05f || normalizedHeight < 0.05f)
+                return;
+
+            factoryContentViewportRect = new Rect(
+                minimumX / Screen.width,
+                minimumY / Screen.height,
+                normalizedWidth,
+                normalizedHeight);
+            hasFactoryContentViewportRect = true;
+        }
+
+        private void DrawOutsideCameraViewport()
+        {
+            if (cameraViewportRect.x <= 0f &&
+                cameraViewportRect.y <= 0f &&
+                cameraViewportRect.width >= 1f &&
+                cameraViewportRect.height >= 1f)
+            {
+                return;
+            }
+
+            float viewportLeft = cameraViewportRect.x * Screen.width;
+            float viewportRight = cameraViewportRect.xMax * Screen.width;
+            float viewportTop = (1f - cameraViewportRect.yMax) * Screen.height;
+            float viewportBottom = (1f - cameraViewportRect.y) * Screen.height;
+            Color maskColor = new Color32(7, 17, 39, 255);
+
+            DrawColorRect(new Rect(0f, 0f, Screen.width, viewportTop), maskColor);
+            DrawColorRect(
+                new Rect(0f, viewportBottom, Screen.width, Screen.height - viewportBottom),
+                maskColor);
+            DrawColorRect(
+                new Rect(0f, viewportTop, viewportLeft, viewportBottom - viewportTop),
+                maskColor);
+            DrawColorRect(
+                new Rect(viewportRight, viewportTop, Screen.width - viewportRight,
+                    viewportBottom - viewportTop),
+                maskColor);
         }
 
         private static Transform FindNumberedLine(Transform lineRoot, int lineNumber)
