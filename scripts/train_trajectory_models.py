@@ -4,6 +4,7 @@
 
   python train_trajectory_models.py --task cls   # ① 원인분류(11클래스) 재학습 + test 평가
   python train_trajectory_models.py --task twin  # ② 디지털트윈 세트(95:5) 배포 시뮬레이션
+  python train_trajectory_models.py --task ens   # ③ baseline+trend 사이클 판정 OR 앙상블 twin 평가
 
 ※ 프로젝트 스코프는 고장원인분류까지 — 예지보전(RUL) 모델은 타 담당자 몫이며, 이 저장소는
    데이터셋의 RUL 라벨(cycles_to_failure 등)만 제공한다(2026-07-22 확정, RUL 학습 코드 제거됨).
@@ -158,19 +159,48 @@ def model_path(tag=""):
     return CLS_MODEL_OUT.replace(".joblib", f"_{tag}.joblib") if tag else CLS_MODEL_OUT
 
 
+def cycle_verdicts(df, pack):
+    """행 단위 예측 → 사이클 단위 15행 다수결 판정 (trajectory_id, cycle_in_traj 인덱스 Series)."""
+    d = df
+    if pack.get("trend_coefs"):
+        d, _ = add_trend_features(df, pack["trend_coefs"])
+    pred = pd.Series(pack["model"].predict(d[pack["feature_cols"]]), index=d.index)
+    return pred.groupby([d["trajectory_id"], d["cycle_in_traj"]]).agg(lambda s: s.mode().iloc[0])
+
+
 def task_twin(latent="keep", trend="off", tag=""):
     cls_pack = joblib.load(model_path(tag))
     df = load_set("twin")
-    if cls_pack.get("trend_coefs"):
-        df, _ = add_trend_features(df, cls_pack["trend_coefs"])
-    df["_pred"] = cls_pack["model"].predict(df[cls_pack["feature_cols"]])
+    cyc = build_cycle_frame(df)
+    cyc["pred"] = cycle_verdicts(df, cls_pack).values
+    report_twin(cyc)
 
-    # 사이클 단위 판정 = 15행 다수결 (스트리밍에서 사이클 종료 시점 판정에 해당)
-    cyc = df.groupby(["trajectory_id", "cycle_in_traj"]).agg(
-        pred=("_pred", lambda s: s.mode().iloc[0]), true=("fault_class", "first"),
+
+def task_ens(latent="keep", trend="off", tag=""):
+    """사이클 판정 OR 앙상블 — trend가 비정상이면 trend의 클래스(정확도 우위), trend가 normal일 때만
+    baseline 판정을 채택. 급진 onset 첫 사이클(추세 버퍼 미반영, §8.4 후속)을 baseline이 보완한다."""
+    base_pack = joblib.load(model_path(""))
+    trend_pack = joblib.load(model_path(tag or "trend"))
+    df = load_set("twin")
+    pb = cycle_verdicts(df, base_pack)
+    pt = cycle_verdicts(df, trend_pack)
+    cyc = build_cycle_frame(df)
+    cyc["pred"] = pt.where(pt != "normal", pb).values
+    both = ((pt != "normal") & (pb != "normal")).sum()
+    print(f"[앙상블 구성] trend만 경보 {((pt != 'normal') & (pb == 'normal')).sum():,} / "
+          f"baseline만 경보 {((pb != 'normal') & (pt == 'normal')).sum():,} / 둘 다 {both:,}사이클")
+    report_twin(cyc)
+
+
+def build_cycle_frame(df):
+    """사이클 단위 라벨 프레임 (스트리밍에서 사이클 종료 시점 판정에 해당)."""
+    return df.groupby(["trajectory_id", "cycle_in_traj"]).agg(
+        true=("fault_class", "first"),
         traj_cls=("gt_traj_class", "first"), inject=("gt_inject_onset", "first"),
         stage=("health_stage", "first")).reset_index()
 
+
+def report_twin(cyc):
     normal_cyc = cyc[cyc["true"] == "normal"]
     fa = (normal_cyc["pred"] != "normal").mean()
     print(f"\n[오경보] 진짜 정상 사이클 {len(normal_cyc):,}개 중 비정상 판정 {(normal_cyc['pred'] != 'normal').sum():,}개 "
@@ -193,11 +223,11 @@ def task_twin(latent="keep", trend="off", tag=""):
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--task", required=True, choices=["cls", "twin"])
+    ap.add_argument("--task", required=True, choices=["cls", "twin", "ens"])
     ap.add_argument("--latent", choices=["keep", "drop"], default="keep",
                     help="잠복 구간(fault인데 health_stage=normal) 행을 학습에 포함할지")
     ap.add_argument("--trend", choices=["off", "on"], default="off",
                     help="사이클 간 추세 피처(TREND_FEATURES) 사용 여부 (twin은 모델에 저장된 설정을 따름)")
     ap.add_argument("--tag", default="", help="실험 태그 — 모델 파일명을 분리해 기준 모델 보존")
     args = ap.parse_args()
-    {"cls": task_cls, "twin": task_twin}[args.task](latent=args.latent, trend=args.trend, tag=args.tag)
+    {"cls": task_cls, "twin": task_twin, "ens": task_ens}[args.task](latent=args.latent, trend=args.trend, tag=args.tag)
