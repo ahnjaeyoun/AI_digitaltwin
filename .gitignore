@@ -6,3 +6,4 @@ docs/
 __pycache__/
 ab_solver/*.csv
 ab_solver/*.log
+origin_solver/
