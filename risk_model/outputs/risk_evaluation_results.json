@@ -1,0 +1,37 @@
+{
+  "model_type": "lstm_autoencoder",
+  "max_sequence_rows": 150,
+  "training_rows": 43488,
+  "metrics": {
+    "evaluation_row_count": 472485,
+    "fault_row_count": 153660,
+    "normal_false_alarm_rate": 0.03430722183015761,
+    "fault_detection_rate": 0.6961343225302616,
+    "window_length_metrics": {
+      "1_14": {
+        "row_count": 2002,
+        "fault_row_count": 0,
+        "normal_false_alarm_rate": 0.0,
+        "fault_detection_rate": null
+      },
+      "15_59": {
+        "row_count": 6435,
+        "fault_row_count": 0,
+        "normal_false_alarm_rate": 0.00808080808080808,
+        "fault_detection_rate": null
+      },
+      "60_149": {
+        "row_count": 12870,
+        "fault_row_count": 29,
+        "normal_false_alarm_rate": 0.0005451288840432988,
+        "fault_detection_rate": 0.0
+      },
+      "150": {
+        "row_count": 451178,
+        "fault_row_count": 153631,
+        "normal_false_alarm_rate": 0.03656229099940514,
+        "fault_detection_rate": 0.6962657276200767
+      }
+    }
+  }
+}

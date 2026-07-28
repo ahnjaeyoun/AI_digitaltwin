@@ -602,6 +602,62 @@ private:
         return "";
     }
 
+    void calculate_relief_branch_flow() {
+#if 0
+        Cell* relief = nullptr;
+        for (auto& item : cells_) {
+            if (item.second.line_type == "relief_valve") {
+                relief = &item.second;
+                break;
+            }
+        }
+        if (!relief || relief->set_pressure_bar_g <= 0.0 || relief->kv_max_m3_h <= 0.0
+            || !nodes_.contains(relief->from_node)) {
+            return;
+        }
+
+        const double source_pressure_bar_g = nodes_.at(relief->from_node).pressure_bar_g;
+        const double overpressure_bar = source_pressure_bar_g - relief->set_pressure_bar_g;
+        if (overpressure_bar <= 0.0) {
+            return;
+        }
+
+        // 릴리프는 설정압을 초과할 때만 열립니다. Kv 식으로 설정압을 초과한 압력에
+        // 해당하는 유량을 계산하므로, 릴리프 설정값을 그대로 모델 입력에 넣지 않아도
+        // 압력계·유량계에서 관측 가능한 물리 결과를 얻을 수 있습니다.
+        const double specific_gravity = fluid_.density_kg_m3 / 1000.0;
+        relief_flow_m3_s_ = relief->kv_max_m3_h
+            * std::sqrt(overpressure_bar / specific_gravity) / 3600.0;
+
+        // 수치상 펌프가 공급하는 총 유량보다 큰 릴리프 유량은 허용하지 않습니다.
+        relief_flow_m3_s_ = std::min(relief_flow_m3_s_, std::max(0.0, last_q_m3_s_));
+        if (relief_flow_m3_s_ <= 0.0) {
+            return;
+        }
+
+        // CSV의 속도·Kv 결과도 실제로 릴리프 유로가 열렸음을 표현하도록 갱신합니다.
+        relief->opening_percent = 100.0;
+        relief->active = true;
+        relief->active_from_node = relief->from_node;
+        relief->active_to_node = relief->to_node;
+        relief->flow_direction = "forward";
+        recompute_cell_flow(*relief, relief_flow_m3_s_);
+
+        for (auto& item : cells_) {
+            Cell& return_pipe = item.second;
+            if (return_pipe.line_type != "relief" || return_pipe.from_node != relief->to_node) {
+                continue;
+            }
+            return_pipe.active = true;
+            return_pipe.active_from_node = return_pipe.from_node;
+            return_pipe.active_to_node = return_pipe.to_node;
+            return_pipe.flow_direction = "forward";
+            recompute_cell_flow(return_pipe, relief_flow_m3_s_);
+            break;
+        }
+#endif
+    }
+
     void mark_path_directions(const std::vector<std::string>& path, const std::string& start_node) {
         std::string current_node = start_node;
         for (const auto& cell_id : path) {
