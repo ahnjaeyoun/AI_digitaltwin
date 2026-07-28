@@ -1,0 +1,12 @@
+# DigitalTwin 위험도 모델 실행용 라이브러리입니다.
+# Solver·Unity·다른 팀의 고장 유형 분류 모델 의존성은 포함하지 않습니다.
+
+# 데이터 읽기·전처리·수치 계산
+numpy>=2.0,<3.0
+pandas>=2.0,<4.0
+
+# StandardScaler 정규화
+scikit-learn>=1.3,<2.0
+
+# LSTM Autoencoder 학습·위험도 추론(CPU 또는 환경에 맞는 PyTorch 패키지 설치)
+torch>=2.0,<3.0
