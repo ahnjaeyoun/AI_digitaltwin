@@ -1,0 +1,44 @@
+services:
+  broker:
+    restart: always
+    ports:
+      - "${MQTT_BIND_ADDRESS:-127.0.0.1}:${MQTT_HOST_PORT:-1883}:1883"
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"
+
+  timescaledb:
+    restart: always
+    ports:
+      - "${TIMESCALE_BIND_ADDRESS:-127.0.0.1}:${TIMESCALE_HOST_PORT:-6543}:5432"
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"
+
+  raw-solver:
+    restart: always
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
+
+  anomaly:
+    restart: always
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
+
+  risk:
+    restart: always
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"

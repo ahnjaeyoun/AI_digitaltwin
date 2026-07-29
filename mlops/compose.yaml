@@ -1,0 +1,157 @@
+name: digital-twin
+
+x-mqtt-environment: &mqtt-environment
+  MQTT_HOST: broker
+  MQTT_PORT: "1883"
+  MQTT_INPUT_TOPIC: hydraulic-press/solver/input
+  MQTT_UNITY_TOPIC: hydraulic-press/unity/state
+  MQTT_SOLVER_STATE_TOPIC: hydraulic-press/unity/state
+  MQTT_ANOMALY_TOPIC: hydraulic-press/anomaly/result
+  MQTT_RISK_TOPIC: hydraulic-press/risk/result
+
+x-timescale-environment: &timescale-environment
+  TIMESCALE_DSN: >-
+    host=timescaledb port=5432
+    dbname=${TIMESCALE_DB:-digital_twin}
+    user=${TIMESCALE_USER:-digital_twin}
+    password=${TIMESCALE_PASSWORD:?TIMESCALE_PASSWORD must be set}
+  TIMESCALE_SCHEMA: ${TIMESCALE_SCHEMA:-public}
+
+services:
+  broker:
+    image: ${MOSQUITTO_IMAGE:-eclipse-mosquitto:2.0}
+    restart: unless-stopped
+    volumes:
+      - ./docker/mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+      - mosquitto_data:/mosquitto/data
+      - mosquitto_log:/mosquitto/log
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          mosquitto_pub -h 127.0.0.1 -p 1883
+          -t docker/health -m ok >/dev/null 2>&1
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 5s
+    networks:
+      - digital_twin
+
+  timescaledb:
+    image: ${TIMESCALE_IMAGE:-timescale/timescaledb-ha:pg18}
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${TIMESCALE_DB:-digital_twin}
+      POSTGRES_USER: ${TIMESCALE_USER:-digital_twin}
+      POSTGRES_PASSWORD: ${TIMESCALE_PASSWORD:?TIMESCALE_PASSWORD must be set}
+    volumes:
+      - timescale_data:/home/postgres/pgdata/data
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - pg_isready -U "$$POSTGRES_USER" -d "$$POSTGRES_DB"
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 30s
+    stop_grace_period: 60s
+    networks:
+      - digital_twin
+
+  raw-solver:
+    image: ${REGISTRY_PREFIX:-}digital-twin-raw-solver:${IMAGE_TAG:-local}
+    build:
+      context: ./raw_solver
+      dockerfile: Dockerfile
+    init: true
+    restart: unless-stopped
+    environment:
+      <<:
+        - *mqtt-environment
+        - *timescale-environment
+    depends_on:
+      broker:
+        condition: service_healthy
+      timescaledb:
+        condition: service_healthy
+    stop_grace_period: 150s
+    networks:
+      - digital_twin
+
+  anomaly:
+    image: ${REGISTRY_PREFIX:-}digital-twin-anomaly:${IMAGE_TAG:-local}
+    build:
+      context: ./anomaly
+      dockerfile: Dockerfile
+    init: true
+    restart: unless-stopped
+    environment:
+      <<:
+        - *mqtt-environment
+        - *timescale-environment
+    depends_on:
+      broker:
+        condition: service_healthy
+      timescaledb:
+        condition: service_healthy
+    networks:
+      - digital_twin
+
+  risk:
+    image: ${REGISTRY_PREFIX:-}digital-twin-risk:${IMAGE_TAG:-local}
+    build:
+      context: ./risk
+      dockerfile: Dockerfile
+    init: true
+    restart: unless-stopped
+    environment:
+      <<:
+        - *mqtt-environment
+        - *timescale-environment
+    depends_on:
+      broker:
+        condition: service_healthy
+      timescaledb:
+        condition: service_healthy
+    networks:
+      - digital_twin
+
+  raw-publisher:
+    image: ${REGISTRY_PREFIX:-}digital-twin-raw-solver:${IMAGE_TAG:-local}
+    init: true
+    restart: "no"
+    profiles:
+      - simulation
+    command:
+      - sh
+      - -c
+      - >-
+        sleep ${PUBLISH_START_DELAY_SECONDS:-5}
+        && exec python mqtt/Publisher.py
+        --interval ${PUBLISH_INTERVAL_SECONDS:-1.0}
+        --repeat ${PUBLISH_REPEAT:-1}
+        --line-number ${PRESS_LINE_NUMBER:-7}
+    environment:
+      <<: *mqtt-environment
+      PRESS_LINE_NUMBER: ${PRESS_LINE_NUMBER:-7}
+    depends_on:
+      broker:
+        condition: service_healthy
+      raw-solver:
+        condition: service_started
+      anomaly:
+        condition: service_started
+      risk:
+        condition: service_started
+    networks:
+      - digital_twin
+
+networks:
+  digital_twin:
+    driver: bridge
+
+volumes:
+  mosquitto_data:
+  mosquitto_log:
+  timescale_data:

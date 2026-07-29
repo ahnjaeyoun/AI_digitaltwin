@@ -1,0 +1,198 @@
+pipeline {
+    agent { label 'docker-linux' }
+
+    options {
+        timestamps()
+        disableConcurrentBuilds()
+        buildDiscarder(logRotator(numToKeepStr: '30'))
+        timeout(time: 45, unit: 'MINUTES')
+    }
+
+    parameters {
+        string(
+            name: 'REGISTRY_NAMESPACE',
+            defaultValue: 'registry.example.com/digital-twin',
+            description: 'Docker Registry namespace without a trailing slash'
+        )
+        booleanParam(
+            name: 'DEPLOY_STAGING',
+            defaultValue: false,
+            description: 'Deploy the validated main-branch images to staging'
+        )
+        string(
+            name: 'DEPLOY_HOST',
+            defaultValue: '',
+            description: 'SSH target, for example deploy@staging.example.com'
+        )
+        string(
+            name: 'DEPLOY_PATH',
+            defaultValue: '/opt/digital-twin',
+            description: 'Deployment directory on the staging host'
+        )
+    }
+
+    environment {
+        COMPOSE_PROJECT_NAME = "dt-ci-${BUILD_NUMBER}"
+        IMAGE_TAG = "ci-${BUILD_NUMBER}"
+        REGISTRY_PREFIX = ''
+        REGISTRY_HOST = ''
+        MLOPS_DIR = 'mlops'
+        TIMESCALE_PASSWORD = "ci-only-${BUILD_NUMBER}"
+        TIMESCALE_DB = 'digital_twin'
+        TIMESCALE_USER = 'digital_twin'
+    }
+
+    stages {
+        stage('Checkout') {
+            steps {
+                checkout scm
+            }
+        }
+
+        stage('Initialize') {
+            steps {
+                script {
+                    env.MLOPS_DIR = fileExists('mlops/compose.yaml') ? 'mlops' : '.'
+                    def namespace = params.REGISTRY_NAMESPACE.trim().replaceAll('/+$', '')
+                    if (!namespace) {
+                        error('REGISTRY_NAMESPACE must not be empty')
+                    }
+                    env.REGISTRY_PREFIX = "${namespace}/"
+                    env.REGISTRY_HOST = namespace.tokenize('/')[0]
+                    env.IMAGE_TAG = sh(
+                        script: 'git rev-parse --short=12 HEAD',
+                        returnStdout: true
+                    ).trim()
+                }
+                echo "Image tag: ${env.IMAGE_TAG}"
+            }
+        }
+
+        stage('Validate') {
+            steps {
+                dir("${env.MLOPS_DIR}") {
+                    sh '''
+                        mkdir -p reports
+                        docker compose -f compose.yaml -f compose.ci.yaml config --quiet
+                        docker run --rm \
+                          -v "$PWD:/workspace" \
+                          -w /workspace \
+                          python:3.12-slim-bookworm \
+                          python ci/validate_python.py
+                    '''
+                }
+            }
+        }
+
+        stage('Build Images') {
+            steps {
+                dir("${env.MLOPS_DIR}") {
+                    sh '''
+                        docker compose -f compose.yaml -f compose.ci.yaml build --pull \
+                          raw-solver anomaly risk ci-tester
+                    '''
+                }
+            }
+        }
+
+        stage('Integration Test') {
+            steps {
+                dir("${env.MLOPS_DIR}") {
+                    sh 'sh ci/run-integration.sh'
+                }
+            }
+        }
+
+        stage('Push Images') {
+            when {
+                anyOf {
+                    branch 'main'
+                    buildingTag()
+                }
+            }
+            steps {
+                dir("${env.MLOPS_DIR}") {
+                    withCredentials([
+                        usernamePassword(
+                            credentialsId: 'docker-registry',
+                            usernameVariable: 'REGISTRY_USER',
+                            passwordVariable: 'REGISTRY_PASSWORD'
+                        )
+                    ]) {
+                        sh '''
+                            echo "$REGISTRY_PASSWORD" | \
+                              docker login "$REGISTRY_HOST" \
+                                --username "$REGISTRY_USER" \
+                                --password-stdin
+                            docker compose -f compose.yaml push \
+                              raw-solver anomaly risk
+                            docker logout "$REGISTRY_HOST"
+                        '''
+                    }
+                }
+            }
+        }
+
+        stage('Deploy Staging') {
+            when {
+                allOf {
+                    branch 'main'
+                    expression { return params.DEPLOY_STAGING }
+                }
+            }
+            steps {
+                script {
+                    if (!params.DEPLOY_HOST.trim()) {
+                        error('DEPLOY_HOST is required when DEPLOY_STAGING is enabled')
+                    }
+                }
+                dir("${env.MLOPS_DIR}") {
+                    withCredentials([
+                        file(
+                            credentialsId: 'digital-twin-staging-env',
+                            variable: 'STAGING_ENV_FILE'
+                        )
+                    ]) {
+                        sshagent(credentials: ['digital-twin-staging-ssh']) {
+                            sh '''
+                                ssh "$DEPLOY_HOST" "mkdir -p '$DEPLOY_PATH/docker/mosquitto' '$DEPLOY_PATH/deploy'"
+                                scp compose.yaml compose.production.yaml \
+                                  "$DEPLOY_HOST:$DEPLOY_PATH/"
+                                scp docker/mosquitto/mosquitto.conf \
+                                  "$DEPLOY_HOST:$DEPLOY_PATH/docker/mosquitto/"
+                                scp deploy/deploy.sh \
+                                  "$DEPLOY_HOST:$DEPLOY_PATH/deploy/"
+                                scp "$STAGING_ENV_FILE" \
+                                  "$DEPLOY_HOST:$DEPLOY_PATH/.env"
+                                ssh "$DEPLOY_HOST" \
+                                  "cd '$DEPLOY_PATH' && chmod 600 .env && \
+                                   REGISTRY_PREFIX='$REGISTRY_PREFIX' \
+                                   IMAGE_TAG='$IMAGE_TAG' \
+                                   sh deploy/deploy.sh"
+                            '''
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    post {
+        always {
+            dir("${env.MLOPS_DIR}") {
+                sh '''
+                    mkdir -p reports
+                    docker compose -f compose.yaml -f compose.ci.yaml \
+                      logs --no-color > reports/compose.log 2>&1 || true
+                    docker compose -f compose.yaml -f compose.ci.yaml \
+                      down -v --remove-orphans || true
+                '''
+                junit allowEmptyResults: true, testResults: 'reports/*.xml'
+                archiveArtifacts allowEmptyArchive: true, artifacts: 'reports/**'
+            }
+        }
+        cleanup {
+            sh 'docker logout "$REGISTRY_HOST" >/dev/null 2>&1 || true'
+        }
+    }
+}

@@ -1,0 +1,3 @@
+# Publisher.py와 Solver.py에서 사용하는 MQTT 3.1.1/5.0 클라이언트
+paho-mqtt>=2.1,<3
+psycopg[binary]>=3.2,<4

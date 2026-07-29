@@ -1,0 +1,5 @@
+__pycache__/
+*.py[cod]
+*.log
+realtime_solver_project/realtime_solver_output.csv
+realtime_solver_project/mqtt_realtime_input.csv

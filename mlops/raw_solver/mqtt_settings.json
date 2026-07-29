@@ -1,0 +1,48 @@
+{
+  "broker": {
+    "host": "100.111.13.113",
+    "port": 1883,
+    "qos": 1,
+    "keepalive": 60,
+    "tls": false
+  },
+  "topics": {
+    "input": "hydraulic-press/solver/input",
+    "unity": "hydraulic-press/unity/state",
+    "anomaly": "hydraulic-press/anomaly/result",
+    "risk": "hydraulic-press/risk/result"
+  },
+  "publisher": {
+    "line_number": 7
+  },
+  "solver": {},
+  "unity": {
+    "enabled": true,
+    "qos": 1,
+    "retain": false
+  },
+  "anomaly": {
+    "enabled": true,
+    "source_topic": "hydraulic-press/unity/state",
+    "output_topic": "hydraulic-press/anomaly/result",
+    "qos": 1,
+    "retain": false,
+    "log_every": 1
+  },
+  "risk": {
+    "enabled": true,
+    "source_topic": "hydraulic-press/unity/state",
+    "output_topic": "hydraulic-press/risk/result",
+    "qos": 1,
+    "retain": false,
+    "alert_threshold_percent": 60.0,
+    "log_every": 1
+  },
+  "timescaledb": {
+    "schema": "public",
+    "required": false,
+    "initialize": true,
+    "connect_timeout": 5,
+    "flush_timeout": 30.0
+  }
+}

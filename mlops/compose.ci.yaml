@@ -1,0 +1,54 @@
+services:
+  broker:
+    restart: "no"
+
+  timescaledb:
+    restart: "no"
+
+  raw-solver:
+    restart: "no"
+
+  anomaly:
+    restart: "no"
+
+  risk:
+    restart: "no"
+
+  raw-publisher:
+    command:
+      - sh
+      - -c
+      - >-
+        sleep 2
+        && exec python mqtt/Publisher.py
+        --interval ${CI_PUBLISH_INTERVAL_SECONDS:-0.01}
+        --repeat 1
+        --line-number ${PRESS_LINE_NUMBER:-7}
+
+  ci-tester:
+    image: digital-twin-ci-tester:${IMAGE_TAG:-local}
+    build:
+      context: ./ci
+      dockerfile: Dockerfile
+    restart: "no"
+    environment:
+      PGHOST: timescaledb
+      PGPORT: "5432"
+      PGDATABASE: ${TIMESCALE_DB:-digital_twin}
+      PGUSER: ${TIMESCALE_USER:-digital_twin}
+      PGPASSWORD: ${TIMESCALE_PASSWORD:?TIMESCALE_PASSWORD must be set}
+      TEST_TIMEOUT_SECONDS: ${TEST_TIMEOUT_SECONDS:-240}
+      TEST_REPORT_PATH: /reports/integration.xml
+    volumes:
+      - ./reports:/reports
+    depends_on:
+      timescaledb:
+        condition: service_healthy
+      raw-solver:
+        condition: service_started
+      anomaly:
+        condition: service_started
+      risk:
+        condition: service_started
+    networks:
+      - digital_twin
