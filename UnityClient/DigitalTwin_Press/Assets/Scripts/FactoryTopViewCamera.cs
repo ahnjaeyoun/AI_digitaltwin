@@ -58,6 +58,9 @@ namespace DigitalTwin.View
         private readonly Vector3[] lineMarkerWorldPositions = new Vector3[LineCount];
         private readonly bool[] hasLineMarkerPosition = new bool[LineCount];
         private readonly string[] lineDisplayNames = new string[LineCount];
+        private readonly int[] lineGridColumns = new int[LineCount];
+        private readonly int[] lineGridRows = new int[LineCount];
+        private readonly List<GameObject> generatedLinePresses = new List<GameObject>();
         private Vector2 lineScrollPosition;
         private GUIStyle navigationTitleStyle;
         private GUIStyle navigationButtonStyle;
@@ -137,7 +140,6 @@ namespace DigitalTwin.View
         public void RefreshView()
         {
             Scene activeScene = SceneManager.GetActiveScene();
-            HideRenderersAboveWorldHeight(activeScene, MaximumVisibleWorldHeight);
             Transform lineRoot = FindLineRoot(activeScene);
             if (lineRoot == null)
             {
@@ -145,6 +147,8 @@ namespace DigitalTwin.View
                 return;
             }
 
+            int generatedPressCount = EnsureHydraulicPressForEveryLine(lineRoot);
+            HideRenderersAboveWorldHeight(activeScene, MaximumVisibleWorldHeight);
             Renderer[] lineRenderers = lineRoot.GetComponentsInChildren<Renderer>(true);
             if (!TryCalculateBounds(lineRenderers, out Bounds lineBounds))
             {
@@ -204,7 +208,8 @@ namespace DigitalTwin.View
             Debug.Log(
                 $"[탑뷰] Line/01~16과 공장 구조를 표시합니다. 중심={viewBounds.center}, " +
                 $"범위={viewBounds.size}, 카메라 크기={orthographicSize:0.0}, " +
-                $"천장 부착 구조물 제거={removedCeilingStructureCount}개");
+                $"천장 부착 구조물 제거={removedCeilingStructureCount}개, " +
+                $"유압프레스 복제={generatedPressCount}개");
         }
 
         private void LateUpdate()
@@ -231,6 +236,12 @@ namespace DigitalTwin.View
 
         private void OnDestroy()
         {
+            foreach (GameObject generatedPress in generatedLinePresses)
+            {
+                if (generatedPress != null)
+                    Destroy(generatedPress);
+            }
+            generatedLinePresses.Clear();
             DestroyTexture(navigationPanelTexture);
             DestroyTexture(navigationRowTexture);
             DestroyTexture(navigationHoverTexture);
@@ -292,21 +303,42 @@ namespace DigitalTwin.View
 
         private void CacheLineMarkerPositions(Transform lineRoot)
         {
+            Bounds markerGridBounds = default;
+            bool hasMarkerGridBounds = false;
             for (int index = 0; index < LineCount; index++)
             {
                 hasLineMarkerPosition[index] = false;
                 Transform line = FindNumberedLine(lineRoot, index + 1);
-                if (line == null ||
-                    !TryCalculateBounds(line.GetComponentsInChildren<Renderer>(true), out Bounds bounds))
+                if (line == null)
                 {
                     continue;
                 }
 
+                Transform linePress = FindLinePress(line, index + 1);
+                Renderer[] lineRenderers = line.GetComponentsInChildren<Renderer>(true);
+                Bounds bounds;
+                bool calculatedBounds = linePress != null
+                    ? TryCalculateBoundsExcluding(lineRenderers, linePress, out bounds)
+                    : TryCalculateBounds(lineRenderers, out bounds);
+                if (!calculatedBounds)
+                    continue;
+
                 lineMarkerWorldPositions[index] = bounds.center;
                 hasLineMarkerPosition[index] = true;
+                if (!hasMarkerGridBounds)
+                {
+                    markerGridBounds = bounds;
+                    hasMarkerGridBounds = true;
+                }
+                else
+                {
+                    markerGridBounds.Encapsulate(bounds);
+                }
             }
 
             AssignLineDisplayNamesByPosition();
+            if (hasMarkerGridBounds)
+                ArrangeLineMarkersInGrid(markerGridBounds);
         }
 
         private void AssignLineDisplayNamesByPosition()
@@ -323,22 +355,42 @@ namespace DigitalTwin.View
             if (validLines.Count != LineCount)
                 return;
 
-            int[] columnByLine = new int[LineCount];
-            int[] rowByLine = new int[LineCount];
             validLines.Sort((left, right) =>
                 lineMarkerWorldPositions[left].x.CompareTo(lineMarkerWorldPositions[right].x));
             for (int rank = 0; rank < validLines.Count; rank++)
-                columnByLine[validLines[rank]] = rank / 4;
+                lineGridColumns[validLines[rank]] = rank / 4;
 
             validLines.Sort((left, right) =>
                 lineMarkerWorldPositions[right].z.CompareTo(lineMarkerWorldPositions[left].z));
             for (int rank = 0; rank < validLines.Count; rank++)
-                rowByLine[validLines[rank]] = rank / 4 + 1;
+                lineGridRows[validLines[rank]] = rank / 4 + 1;
 
             for (int index = 0; index < LineCount; index++)
             {
-                char column = (char)('A' + Mathf.Clamp(columnByLine[index], 0, 3));
-                lineDisplayNames[index] = $"{column}{Mathf.Clamp(rowByLine[index], 1, 4)}";
+                char column = (char)('A' + Mathf.Clamp(lineGridColumns[index], 0, 3));
+                lineDisplayNames[index] =
+                    $"{column}{Mathf.Clamp(lineGridRows[index], 1, 4)}";
+            }
+        }
+
+        private void ArrangeLineMarkersInGrid(Bounds gridBounds)
+        {
+            float cellWidth = gridBounds.size.x / 4f;
+            float cellDepth = gridBounds.size.z / 4f;
+            if (cellWidth <= 0.01f || cellDepth <= 0.01f)
+                return;
+
+            for (int index = 0; index < LineCount; index++)
+            {
+                if (!hasLineMarkerPosition[index])
+                    continue;
+
+                int column = Mathf.Clamp(lineGridColumns[index], 0, 3);
+                int row = Mathf.Clamp(lineGridRows[index], 1, 4);
+                Vector3 position = lineMarkerWorldPositions[index];
+                position.x = gridBounds.min.x + cellWidth * (column + 0.5f);
+                position.z = gridBounds.max.z - cellDepth * (row - 0.5f);
+                lineMarkerWorldPositions[index] = position;
             }
         }
 
@@ -604,7 +656,8 @@ namespace DigitalTwin.View
                 DigitalTwin.Line11.Line11PressDetailController.Instance;
             if (detailController != null)
             {
-                if (lineNumber == 11)
+                if (lineNumber ==
+                    DigitalTwin.Line11.Line11PressDetailController.LiveTelemetryLineNumber)
                     detailController.OpenDetail();
                 else
                     detailController.OpenLineDetail(lineNumber);
@@ -710,6 +763,128 @@ namespace DigitalTwin.View
             }
 
             return null;
+        }
+
+        private static Transform FindLinePress(Transform line, int lineNumber)
+        {
+            if (line == null)
+                return null;
+
+            return FindDescendantByName(line, $"Line{lineNumber:00}_Press");
+        }
+
+        private int EnsureHydraulicPressForEveryLine(Transform lineRoot)
+        {
+            Transform sourceLine = FindNumberedLine(lineRoot, 11);
+            Transform sourcePress = FindDescendantByName(sourceLine, "Line11_Press");
+            if (sourceLine == null || sourcePress == null)
+            {
+                Debug.LogWarning(
+                    "[탑뷰] C2 원본 유압프레스(Line/11/Line11_Press)를 찾지 못했습니다.");
+                return 0;
+            }
+
+            if (!TryCalculateBoundsExcluding(
+                    sourceLine.GetComponentsInChildren<Renderer>(true),
+                    sourcePress,
+                    out Bounds sourceLineBounds))
+            {
+                Debug.LogWarning("[탑뷰] C2 라인의 프레스 제외 설비 범위를 계산하지 못했습니다.");
+                return 0;
+            }
+
+            Vector3 pressOffsetFromLineCenter =
+                sourcePress.position - sourceLineBounds.center;
+            int generatedCount = 0;
+            for (int lineNumber = 1; lineNumber <= LineCount; lineNumber++)
+            {
+                if (lineNumber == 11)
+                    continue;
+
+                Transform targetLine = FindNumberedLine(lineRoot, lineNumber);
+                if (targetLine == null)
+                    continue;
+
+                string targetName = $"Line{lineNumber:00}_Press";
+                if (FindDescendantByName(targetLine, targetName) != null)
+                    continue;
+
+                if (!TryCalculateBounds(
+                        targetLine.GetComponentsInChildren<Renderer>(true),
+                        out Bounds targetLineBounds))
+                {
+                    Debug.LogWarning(
+                        $"[탑뷰] Line/{lineNumber:00} 설비 범위를 계산하지 못해 " +
+                        "유압프레스를 배치하지 않았습니다.");
+                    continue;
+                }
+
+                GameObject pressClone = Instantiate(
+                    sourcePress.gameObject,
+                    targetLine,
+                    true);
+                pressClone.name = targetName;
+                pressClone.transform.position =
+                    targetLineBounds.center + pressOffsetFromLineCenter;
+                generatedLinePresses.Add(pressClone);
+                generatedCount++;
+            }
+
+            return generatedCount;
+        }
+
+        private static Transform FindDescendantByName(Transform root, string objectName)
+        {
+            if (root == null)
+                return null;
+
+            if (root.name == objectName)
+                return root;
+
+            foreach (Transform child in root)
+            {
+                Transform match = FindDescendantByName(child, objectName);
+                if (match != null)
+                    return match;
+            }
+
+            return null;
+        }
+
+        private static bool TryCalculateBoundsExcluding(
+            Renderer[] renderers,
+            Transform excludedRoot,
+            out Bounds bounds)
+        {
+            bounds = default;
+            bool hasBounds = false;
+            foreach (Renderer renderer in renderers)
+            {
+                if (renderer == null || !renderer.enabled ||
+                    renderer.gameObject.layer == PreviewLayer ||
+                    (excludedRoot != null &&
+                     (renderer.transform == excludedRoot ||
+                      renderer.transform.IsChildOf(excludedRoot))))
+                {
+                    continue;
+                }
+
+                Bounds rendererBounds = renderer.bounds;
+                if (!IsFinite(rendererBounds.center) || !IsFinite(rendererBounds.extents))
+                    continue;
+
+                if (!hasBounds)
+                {
+                    bounds = rendererBounds;
+                    hasBounds = true;
+                }
+                else
+                {
+                    bounds.Encapsulate(rendererBounds);
+                }
+            }
+
+            return hasBounds;
         }
 
         public FactoryStatus GetLineStatus(int lineNumber)

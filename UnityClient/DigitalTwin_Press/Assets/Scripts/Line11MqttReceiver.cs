@@ -19,20 +19,29 @@ namespace DigitalTwin.Line11
     [DefaultExecutionOrder(-100)]
     public sealed class Line11MqttReceiver : MonoBehaviour
     {
-        private const string DefaultBrokerAddress = "100.111.13.113";
+        private const string DefaultBrokerAddress = "127.0.0.1";
         private const int DefaultBrokerPort = 1883;
         private const string DefaultTopic = "hydraulic-press/unity/state";
+        private const string DefaultAnomalyTopic = "hydraulic-press/anomaly/result";
+        private const string DefaultRiskTopic = "hydraulic-press/risk/result";
         private const int KeepAliveSeconds = 30;
+        private const int RecentSolverMessageLimit = 2048;
 
         private static Line11MqttReceiver instance;
 
         [SerializeField] private string brokerAddress = DefaultBrokerAddress;
         [SerializeField] private int brokerPort = DefaultBrokerPort;
         [SerializeField] private string topic = DefaultTopic;
+        [SerializeField] private string anomalyTopic = DefaultAnomalyTopic;
+        [SerializeField] private string riskTopic = DefaultRiskTopic;
         [SerializeField, Min(0.5f)] private float noDataTimeoutSeconds = 3f;
 
-        private readonly ConcurrentQueue<string> receivedMessages = new ConcurrentQueue<string>();
+        private readonly ConcurrentQueue<ReceivedMessage> receivedMessages =
+            new ConcurrentQueue<ReceivedMessage>();
         private readonly ConcurrentQueue<string> connectionLogs = new ConcurrentQueue<string>();
+        private readonly HashSet<string> recentSolverMessageIds =
+            new HashSet<string>(StringComparer.Ordinal);
+        private readonly Queue<string> recentSolverMessageOrder = new Queue<string>();
         private Thread workerThread;
         private TcpClient activeClient;
         private volatile bool stopping;
@@ -87,10 +96,15 @@ namespace DigitalTwin.Line11
             }
 
             int processed = 0;
-            while (processed < 50 && receivedMessages.TryDequeue(out string json))
+            while (processed < 50 && receivedMessages.TryDequeue(out ReceivedMessage message))
             {
                 processed++;
-                ApplySolverState(json);
+                if (string.Equals(message.Topic, anomalyTopic, StringComparison.Ordinal))
+                    ApplyAnomalyState(message.Payload);
+                else if (string.Equals(message.Topic, riskTopic, StringComparison.Ordinal))
+                    ApplyRiskState(message.Payload);
+                else
+                    ApplySolverState(message.Payload);
             }
 
             ApplyNoDataStateWhenRequired();
@@ -155,9 +169,15 @@ namespace DigitalTwin.Line11
                     ValidateConnAck(ReadPacket(stream));
                     SendSubscribe(stream, 1, topic);
                     ValidateSubAck(ReadPacket(stream), 1);
+                    SendSubscribe(stream, 2, anomalyTopic);
+                    ValidateSubAck(ReadPacket(stream), 2);
+                    SendSubscribe(stream, 3, riskTopic);
+                    ValidateSubAck(ReadPacket(stream), 3);
 
                     IsConnected = true;
-                    connectionLogs.Enqueue($"연결 완료: {brokerAddress}:{brokerPort}, topic={topic}");
+                    connectionLogs.Enqueue(
+                        $"연결 완료: {brokerAddress}:{brokerPort}, " +
+                        $"topics={topic}, {anomalyTopic}, {riskTopic}");
                     DateTime lastNetworkWrite = DateTime.UtcNow;
 
                     while (!stopping && client.Connected)
@@ -217,10 +237,12 @@ namespace DigitalTwin.Line11
                 index += 2;
             }
 
-            if (receivedTopic == topic)
+            if (receivedTopic == topic ||
+                receivedTopic == anomalyTopic ||
+                receivedTopic == riskTopic)
             {
                 string payload = Encoding.UTF8.GetString(body, index, body.Length - index);
-                receivedMessages.Enqueue(payload);
+                receivedMessages.Enqueue(new ReceivedMessage(receivedTopic, payload));
             }
 
             if (qos == 1)
@@ -255,6 +277,35 @@ namespace DigitalTwin.Line11
 
                 Line11PressDetailController controller = Line11PressDetailController.Instance;
                 if (controller == null)
+                    return;
+                int lineNumber = Mathf.Clamp(
+                    ReadInt(
+                        message,
+                        "line_number",
+                        Line11PressDetailController.LiveTelemetryLineNumber),
+                    1,
+                    16);
+                if (!TryRegisterSolverMessage(message))
+                    return;
+
+                bool criticalSolverState = ReadBool(result, "contains_inf_or_nan") ||
+                    !string.Equals(
+                        ReadString(result, "status"),
+                        "ok",
+                        StringComparison.OrdinalIgnoreCase);
+                bool solverWarning = ReadBool(result, "solver_warning") || criticalSolverState;
+                SetLineFactoryStatus(
+                    lineNumber,
+                    criticalSolverState
+                        ? DigitalTwin.View.FactoryTopViewCamera.FactoryStatus.Critical
+                        : solverWarning
+                            ? DigitalTwin.View.FactoryTopViewCamera.FactoryStatus.Caution
+                            : DigitalTwin.View.FactoryTopViewCamera.FactoryStatus.Normal);
+
+                LastMessageTime = DateTime.Now;
+                showingNoDataState = false;
+                noDataController = null;
+                if (!controller.ShouldApplyLiveMeasurements(lineNumber))
                     return;
 
                 if (!initializedLiveCounters)
@@ -361,25 +412,158 @@ namespace DigitalTwin.Line11
                 controller.SetPressureTargets(targetPressure, reliefSetPressure);
                 controller.SetReliefValveOpen(reliefOpen);
 
-                bool criticalSolverState = ReadBool(result, "contains_inf_or_nan") ||
-                    !string.Equals(ReadString(result, "status"), "ok", StringComparison.OrdinalIgnoreCase);
-                bool solverWarning = ReadBool(result, "solver_warning") || criticalSolverState;
                 controller.SetSolverWarning(solverWarning);
-                SetLine11FactoryStatus(
-                    criticalSolverState
-                        ? DigitalTwin.View.FactoryTopViewCamera.FactoryStatus.Critical
-                        : solverWarning
-                            ? DigitalTwin.View.FactoryTopViewCamera.FactoryStatus.Caution
-                            : DigitalTwin.View.FactoryTopViewCamera.FactoryStatus.Normal);
 
                 controller.SetLiveDataAvailable(true);
-                LastMessageTime = DateTime.Now;
-                showingNoDataState = false;
-                noDataController = null;
             }
             catch (Exception exception)
             {
                 Debug.LogWarning("[Line11 MQTT] 메시지 처리 실패: " + exception.Message);
+            }
+        }
+
+        private bool TryRegisterSolverMessage(JObject message)
+        {
+            string messageId = ReadString(message, "message_id");
+            if (string.IsNullOrWhiteSpace(messageId))
+                return true;
+
+            if (!recentSolverMessageIds.Add(messageId))
+                return false;
+
+            recentSolverMessageOrder.Enqueue(messageId);
+            while (recentSolverMessageOrder.Count > RecentSolverMessageLimit)
+            {
+                string expiredMessageId = recentSolverMessageOrder.Dequeue();
+                recentSolverMessageIds.Remove(expiredMessageId);
+            }
+
+            return true;
+        }
+
+        private void ApplyAnomalyState(string json)
+        {
+            try
+            {
+                JObject message = JObject.Parse(json);
+                if (!string.Equals(
+                        ReadString(message, "schema"),
+                        "hydraulic-press.anomaly.v1",
+                        StringComparison.Ordinal))
+                {
+                    return;
+                }
+
+                JObject model = message["model"] as JObject;
+                JObject inference = message["inference"] as JObject;
+                JObject cycle = message["cycle"] as JObject;
+                JObject analysis = message["analysis"] as JObject;
+                if (model == null || inference == null || cycle == null || analysis == null)
+                    throw new InvalidDataException(
+                        "model/inference/cycle/analysis 객체가 없습니다");
+
+                Line11PressDetailController controller = Line11PressDetailController.Instance;
+                if (controller == null)
+                    return;
+
+                bool rowIsAnomaly = ReadBool(inference, "is_anomaly");
+                bool cycleIsAnomaly = ReadBool(cycle, "cycle_is_anomaly");
+                int lineNumber = Mathf.Clamp(
+                    ReadInt(
+                        message,
+                        "line_number",
+                        Line11PressDetailController.LiveTelemetryLineNumber),
+                    1,
+                    16);
+                controller.SetLineAnomalyAnalysis(
+                    lineNumber,
+                    ReadInt(message, "cycle_id"),
+                    ReadString(message, "cycle_phase"),
+                    ReadFloat(inference, "recon_error"),
+                    ReadFloat(inference, "score"),
+                    ReadFloat(model, "threshold"),
+                    rowIsAnomaly,
+                    ReadInt(cycle, "row_count"),
+                    ReadInt(cycle, "anomaly_rows"),
+                    ReadInt(cycle, "k_of_n", 3),
+                    cycleIsAnomaly,
+                    ReadString(analysis, "likely_cause"),
+                    ReadFloat(analysis, "confidence"),
+                    ReadString(analysis, "evidence"),
+                    ReadString(analysis, "recommendation"),
+                    ReadString(analysis, "validation_label"),
+                    ReadString(message, "message_id"),
+                    ReadString(message, "published_at"));
+
+                SetLineFactoryStatus(
+                    lineNumber,
+                    cycleIsAnomaly
+                        ? DigitalTwin.View.FactoryTopViewCamera.FactoryStatus.Critical
+                        : rowIsAnomaly
+                            ? DigitalTwin.View.FactoryTopViewCamera.FactoryStatus.Caution
+                            : DigitalTwin.View.FactoryTopViewCamera.FactoryStatus.Normal);
+            }
+            catch (Exception exception)
+            {
+                Debug.LogWarning(
+                    "[Line11 MQTT] 이상탐지 메시지 처리 실패: " + exception.Message);
+            }
+        }
+
+        private void ApplyRiskState(string json)
+        {
+            try
+            {
+                JObject message = JObject.Parse(json);
+                if (!string.Equals(
+                        ReadString(message, "schema"),
+                        "hydraulic-press.risk.v1",
+                        StringComparison.Ordinal))
+                {
+                    return;
+                }
+
+                JObject model = message["model"] as JObject;
+                JObject risk = message["risk"] as JObject;
+                JObject maintenance = message["maintenance"] as JObject;
+                if (model == null || risk == null || maintenance == null)
+                    throw new InvalidDataException(
+                        "model/risk/maintenance 객체가 없습니다");
+
+                Line11PressDetailController controller =
+                    Line11PressDetailController.Instance;
+                if (controller == null)
+                    return;
+
+                int lineNumber = Mathf.Clamp(
+                    ReadInt(
+                        message,
+                        "line_number",
+                        Line11PressDetailController.LiveTelemetryLineNumber),
+                    1,
+                    16);
+                controller.SetLineRiskEvaluation(
+                    lineNumber,
+                    ReadFloat(risk, "score_percent"),
+                    ReadFloat(risk, "reconstruction_error"),
+                    ReadBool(risk, "alert"),
+                    ReadInt(risk, "window_rows"),
+                    ReadInt(model, "max_sequence_rows", 150),
+                    ReadFloat(risk, "history_coverage_percent"),
+                    ReadFloat(risk, "p95"),
+                    ReadFloat(risk, "p99"),
+                    ReadFloat(model, "alert_threshold_percent", 60f),
+                    ReadString(maintenance, "status"),
+                    ReadString(maintenance, "recommendation"),
+                    ReadString(message, "message_id"),
+                    ReadString(message, "published_at"),
+                    ReadInt(message, "cycle_id"),
+                    ReadString(message, "cycle_phase"));
+            }
+            catch (Exception exception)
+            {
+                Debug.LogWarning(
+                    "[Line11 MQTT] 위험도 메시지 처리 실패: " + exception.Message);
             }
         }
 
@@ -399,18 +583,28 @@ namespace DigitalTwin.Line11
                 return;
 
             controller.SetAllLiveValuesToZero();
-            SetLine11FactoryStatus(DigitalTwin.View.FactoryTopViewCamera.FactoryStatus.Caution);
+            SetLiveLineFactoryStatus(
+                DigitalTwin.View.FactoryTopViewCamera.FactoryStatus.Caution);
             showingNoDataState = true;
             noDataController = controller;
         }
 
-        private static void SetLine11FactoryStatus(
+        private static void SetLiveLineFactoryStatus(
+            DigitalTwin.View.FactoryTopViewCamera.FactoryStatus status)
+        {
+            SetLineFactoryStatus(
+                Line11PressDetailController.LiveTelemetryLineNumber,
+                status);
+        }
+
+        private static void SetLineFactoryStatus(
+            int lineNumber,
             DigitalTwin.View.FactoryTopViewCamera.FactoryStatus status)
         {
             DigitalTwin.View.FactoryTopViewCamera topView =
                 FindAnyObjectByType<DigitalTwin.View.FactoryTopViewCamera>();
             if (topView != null)
-                topView.SetLineStatus(11, status);
+                topView.SetLineStatus(Mathf.Clamp(lineNumber, 1, 16), status);
         }
 
         private static float ActivePathFlow(float systemFlow, float pathVelocity)
@@ -432,6 +626,24 @@ namespace DigitalTwin.Line11
                 NumberStyles.Float,
                 CultureInfo.InvariantCulture,
                 out float value)
+                ? value
+                : fallback;
+        }
+
+        private static int ReadInt(JObject source, string propertyName, int fallback = 0)
+        {
+            JToken token = source[propertyName];
+            if (token == null || token.Type == JTokenType.Null)
+                return fallback;
+
+            if (token.Type == JTokenType.Integer)
+                return token.Value<int>();
+
+            return int.TryParse(
+                token.ToString(),
+                NumberStyles.Integer,
+                CultureInfo.InvariantCulture,
+                out int value)
                 ? value
                 : fallback;
         }
@@ -589,6 +801,18 @@ namespace DigitalTwin.Line11
             {
                 Header = header;
                 Body = body;
+            }
+        }
+
+        private readonly struct ReceivedMessage
+        {
+            public readonly string Topic;
+            public readonly string Payload;
+
+            public ReceivedMessage(string topicName, string payload)
+            {
+                Topic = topicName;
+                Payload = payload;
             }
         }
     }

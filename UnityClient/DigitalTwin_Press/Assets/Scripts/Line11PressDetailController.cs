@@ -15,6 +15,8 @@ namespace DigitalTwin.Line11
     /// </summary>
     public sealed class Line11PressDetailController : MonoBehaviour
     {
+        public const int LiveTelemetryLineNumber = 7;
+
         [Serializable]
         private sealed class HydraulicMetric
         {
@@ -66,6 +68,64 @@ namespace DigitalTwin.Line11
             public bool ReliefOpen;
         }
 
+        private sealed class AnomalyLogEntry
+        {
+            public string EventId;
+            public DateTimeOffset EventTime;
+            public int CycleId;
+            public string CyclePhase;
+            public int CycleRowCount;
+            public int AnomalyRows;
+            public int KOfN;
+            public bool CycleIsAnomaly;
+            public float ReconstructionError;
+            public float Score;
+            public float Threshold;
+            public string LikelyCause;
+            public float Confidence;
+            public string Evidence;
+            public string Recommendation;
+            public string ValidationLabel;
+        }
+
+        private sealed class LineAnomalyLogState
+        {
+            public readonly List<AnomalyLogEntry> Entries =
+                new List<AnomalyLogEntry>();
+            public readonly HashSet<string> SeenMessageIds =
+                new HashSet<string>(StringComparer.Ordinal);
+            public readonly Queue<string> SeenMessageOrder = new Queue<string>();
+            public bool HasReceivedData;
+            public bool IsAnomalyActive;
+            public int TotalEventCount;
+            public AnomalyLogEntry ActiveEntry;
+            public Vector2 LogScrollPosition;
+            public Vector2 DetailScrollPosition;
+            public string SelectedEventId;
+            public bool NewestFirst = true;
+        }
+
+        private sealed class LineRiskState
+        {
+            public readonly List<float> ScoreHistory = new List<float>();
+            public bool HasReceivedData;
+            public string LastMessageId;
+            public float ScorePercent;
+            public float ReconstructionError;
+            public bool Alert;
+            public int WindowRows;
+            public int MaxWindowRows = 150;
+            public float HistoryCoveragePercent;
+            public float P95;
+            public float P99;
+            public float AlertThresholdPercent = 60f;
+            public string Status = "수신 대기";
+            public string Recommendation = "-";
+            public string UpdatedAt = "-";
+            public int CycleId;
+            public string CyclePhase = "-";
+        }
+
         private static readonly Color CanvasClear = new Color(0f, 0f, 0f, 0f);
         private static readonly Color SidebarColor = new Color32(20, 24, 29, 238);
         private static readonly Color PanelColor = new Color32(25, 29, 34, 250);
@@ -80,6 +140,10 @@ namespace DigitalTwin.Line11
         private readonly List<HydraulicMetric> metrics = new List<HydraulicMetric>();
         private readonly List<NormalCycleSample> normalCycleSamples =
             new List<NormalCycleSample>();
+        private readonly Dictionary<int, LineAnomalyLogState> anomalyLogsByLine =
+            new Dictionary<int, LineAnomalyLogState>();
+        private readonly Dictionary<int, LineRiskState> riskStatesByLine =
+            new Dictionary<int, LineRiskState>();
         private readonly Dictionary<string, Text[]> valueLabels =
             new Dictionary<string, Text[]>(StringComparer.OrdinalIgnoreCase);
 
@@ -91,7 +155,7 @@ namespace DigitalTwin.Line11
         private bool initialized;
         private bool detailOpen;
         private bool simulatedLineActive;
-        private int displayedLineNumber = 11;
+        private int displayedLineNumber = LiveTelemetryLineNumber;
         private float simulatedCycleEpochTime;
         private int lastSimulatedSampleIndex = -1;
         private bool guiStylesReady;
@@ -147,6 +211,23 @@ namespace DigitalTwin.Line11
         private float pumpRpm = 1450f;
         private float targetPressureBar = 116f;
         private float reliefSetPressureBar = 130f;
+        private bool currentRowIsAnomaly;
+        private bool currentCycleIsAnomaly;
+        private int anomalyCycleId;
+        private string anomalyCyclePhase = "-";
+        private float reconstructionError;
+        private float anomalyScore;
+        private float anomalyThreshold;
+        private int anomalyCycleRowCount;
+        private int anomalyRowsInCycle;
+        private int anomalyKOfN = 3;
+        private string likelyAnomalyCause = "분석 데이터 수신 대기";
+        private float likelyCauseConfidence;
+        private string anomalyEvidence = "-";
+        private string anomalyRecommendation = "-";
+        private string anomalyValidationLabel = "-";
+        private string anomalyUpdatedAt = "-";
+        private readonly float[] anomalyScoreHistory = new float[48];
         [SerializeField] private string pressSupplyPipeId = "pipe-pump-valve";
         [SerializeField, Min(1f)] private float pressCylinderBoreDiameterMm = 100f;
         [SerializeField, Range(0f, 1f)] private float hydraulicEfficiency = 0.95f;
@@ -167,6 +248,9 @@ namespace DigitalTwin.Line11
         private int selectedDashboardTab;
 
         private const int AssetPreviewLayer = 31;
+        private const int MaxAnomalyLogEntries = 500;
+        private const int MaxSeenAnomalyMessageIds = 5000;
+        private const int MaxRiskHistoryPoints = 60;
 
         public static Line11PressDetailController Instance { get; private set; }
 
@@ -253,6 +337,17 @@ namespace DigitalTwin.Line11
         }
 
         /// <summary>
+        /// The shared measurement table represents C3/Line 7 live telemetry.
+        /// Other lines use their own normal-cycle simulation while selected, so
+        /// incoming C3 MQTT data must not overwrite those simulated values.
+        /// </summary>
+        public bool ShouldApplyLiveMeasurements(int lineNumber)
+        {
+            return !simulatedLineActive &&
+                Mathf.Clamp(lineNumber, 1, 16) == LiveTelemetryLineNumber;
+        }
+
+        /// <summary>
         /// Updates the accumulated warning-event count shown in Condition Summary.
         /// </summary>
         public void SetWarningAlarmCount(int count)
@@ -326,6 +421,406 @@ namespace DigitalTwin.Line11
         }
 
         /// <summary>
+        /// Updates the anomaly-analysis dashboard from one model inference message.
+        /// The model output stays row based while the cycle fields expose the
+        /// accumulated k-of-n decision produced by the Python inference bridge.
+        /// </summary>
+        public void SetAnomalyAnalysis(
+            int cycleId,
+            string cyclePhase,
+            float reconError,
+            float score,
+            float threshold,
+            bool rowIsAnomaly,
+            int cycleRowCount,
+            int anomalyRows,
+            int kOfN,
+            bool cycleIsAnomaly,
+            string likelyCause,
+            float causeConfidence,
+            string evidence,
+            string recommendation,
+            string validationLabel,
+            string eventId,
+            string updatedAt)
+        {
+            SetLineAnomalyAnalysis(
+                11,
+                cycleId,
+                cyclePhase,
+                reconError,
+                score,
+                threshold,
+                rowIsAnomaly,
+                cycleRowCount,
+                anomalyRows,
+                kOfN,
+                cycleIsAnomaly,
+                likelyCause,
+                causeConfidence,
+                evidence,
+                recommendation,
+                validationLabel,
+                eventId,
+                updatedAt);
+        }
+
+        /// <summary>
+        /// Stores one line's anomaly stream independently. A contiguous run of
+        /// anomalous rows is counted as one event. Another event is created only
+        /// after a normal row has closed the previous event.
+        /// </summary>
+        public void SetLineAnomalyAnalysis(
+            int lineNumber,
+            int cycleId,
+            string cyclePhase,
+            float reconError,
+            float score,
+            float threshold,
+            bool rowIsAnomaly,
+            int cycleRowCount,
+            int anomalyRows,
+            int kOfN,
+            bool cycleIsAnomaly,
+            string likelyCause,
+            float causeConfidence,
+            string evidence,
+            string recommendation,
+            string validationLabel,
+            string eventId,
+            string updatedAt)
+        {
+            int normalizedLineNumber = Mathf.Clamp(lineNumber, 1, 16);
+            string normalizedPhase = string.IsNullOrWhiteSpace(cyclePhase)
+                ? "-"
+                : cyclePhase;
+            string normalizedCause = string.IsNullOrWhiteSpace(likelyCause)
+                ? "원인 판별 중"
+                : likelyCause;
+            string normalizedEvidence = string.IsNullOrWhiteSpace(evidence)
+                ? "-"
+                : evidence;
+            string normalizedRecommendation =
+                string.IsNullOrWhiteSpace(recommendation) ? "-" : recommendation;
+            string normalizedValidationLabel =
+                string.IsNullOrWhiteSpace(validationLabel) ? "-" : validationLabel;
+
+            if (normalizedLineNumber == LiveTelemetryLineNumber)
+            {
+                anomalyCycleId = Mathf.Max(0, cycleId);
+                anomalyCyclePhase = normalizedPhase;
+                reconstructionError = Mathf.Max(0f, reconError);
+                anomalyScore = Mathf.Max(0f, score);
+                anomalyThreshold = Mathf.Max(0f, threshold);
+                currentRowIsAnomaly = rowIsAnomaly;
+                anomalyCycleRowCount = Mathf.Max(0, cycleRowCount);
+                anomalyRowsInCycle = Mathf.Max(0, anomalyRows);
+                anomalyKOfN = Mathf.Max(1, kOfN);
+                currentCycleIsAnomaly = cycleIsAnomaly;
+                likelyAnomalyCause = normalizedCause;
+                likelyCauseConfidence = Mathf.Clamp01(causeConfidence);
+                anomalyEvidence = normalizedEvidence;
+                anomalyRecommendation = normalizedRecommendation;
+                anomalyValidationLabel = normalizedValidationLabel;
+                anomalyUpdatedAt = string.IsNullOrWhiteSpace(updatedAt)
+                    ? "-"
+                    : updatedAt;
+
+                ShiftHistory(anomalyScoreHistory);
+                anomalyScoreHistory[anomalyScoreHistory.Length - 1] = anomalyScore;
+            }
+
+            LineAnomalyLogState state = GetLineAnomalyLogState(normalizedLineNumber);
+            string normalizedEventId = string.IsNullOrWhiteSpace(eventId)
+                ? $"{normalizedLineNumber}:{cycleId}:{cycleRowCount}:{updatedAt}"
+                : eventId;
+            if (!state.SeenMessageIds.Add(normalizedEventId))
+                return;
+            state.SeenMessageOrder.Enqueue(normalizedEventId);
+            while (state.SeenMessageOrder.Count > MaxSeenAnomalyMessageIds)
+                state.SeenMessageIds.Remove(state.SeenMessageOrder.Dequeue());
+
+            state.HasReceivedData = true;
+            if (!rowIsAnomaly)
+            {
+                state.IsAnomalyActive = false;
+                state.ActiveEntry = null;
+                return;
+            }
+
+            DateTimeOffset eventTime = ParseAnomalyEventTime(updatedAt);
+            if (state.IsAnomalyActive && state.ActiveEntry != null)
+            {
+                UpdateActiveAnomalyEntry(
+                    state.ActiveEntry,
+                    cycleId,
+                    normalizedPhase,
+                    cycleRowCount,
+                    anomalyRows,
+                    kOfN,
+                    cycleIsAnomaly,
+                    reconError,
+                    score,
+                    threshold,
+                    normalizedCause,
+                    causeConfidence,
+                    normalizedEvidence,
+                    normalizedRecommendation,
+                    normalizedValidationLabel);
+                return;
+            }
+
+            AnomalyLogEntry previousLatest = GetLatestAnomalyLogEntry(state);
+            bool followLatest = string.IsNullOrWhiteSpace(state.SelectedEventId) ||
+                (previousLatest != null &&
+                 string.Equals(
+                     state.SelectedEventId,
+                     previousLatest.EventId,
+                     StringComparison.Ordinal));
+            AnomalyLogEntry entry = new AnomalyLogEntry
+            {
+                EventId = normalizedEventId,
+                EventTime = eventTime,
+                CycleId = cycleId,
+                CyclePhase = cyclePhase,
+                CycleRowCount = cycleRowCount,
+                AnomalyRows = anomalyRows,
+                KOfN = kOfN,
+                CycleIsAnomaly = cycleIsAnomaly,
+                ReconstructionError = reconError,
+                Score = score,
+                Threshold = threshold,
+                LikelyCause = normalizedCause,
+                Confidence = Mathf.Clamp01(causeConfidence),
+                Evidence = normalizedEvidence,
+                Recommendation = normalizedRecommendation,
+                ValidationLabel = normalizedValidationLabel
+            };
+
+            state.Entries.Add(entry);
+            state.Entries.Sort(
+                (left, right) => right.EventTime.CompareTo(left.EventTime));
+            state.TotalEventCount++;
+            state.IsAnomalyActive = true;
+            state.ActiveEntry = entry;
+            if (followLatest)
+            {
+                state.SelectedEventId = entry.EventId;
+                state.DetailScrollPosition = Vector2.zero;
+            }
+
+            while (state.Entries.Count > MaxAnomalyLogEntries)
+            {
+                AnomalyLogEntry removed = state.Entries[state.Entries.Count - 1];
+                state.Entries.RemoveAt(state.Entries.Count - 1);
+                if (ReferenceEquals(state.ActiveEntry, removed))
+                {
+                    state.ActiveEntry = null;
+                    state.IsAnomalyActive = false;
+                }
+            }
+        }
+
+        private static void UpdateActiveAnomalyEntry(
+            AnomalyLogEntry entry,
+            int cycleId,
+            string cyclePhase,
+            int cycleRowCount,
+            int anomalyRows,
+            int kOfN,
+            bool cycleIsAnomaly,
+            float reconError,
+            float score,
+            float threshold,
+            string likelyCause,
+            float confidence,
+            string evidence,
+            string recommendation,
+            string validationLabel)
+        {
+            entry.CycleId = Mathf.Max(0, cycleId);
+            entry.CyclePhase = cyclePhase;
+            entry.CycleRowCount = Mathf.Max(0, cycleRowCount);
+            entry.AnomalyRows = Mathf.Max(0, anomalyRows);
+            entry.KOfN = Mathf.Max(1, kOfN);
+            entry.CycleIsAnomaly |= cycleIsAnomaly;
+            entry.Threshold = Mathf.Max(0f, threshold);
+
+            float normalizedScore = Mathf.Max(0f, score);
+            if (normalizedScore >= entry.Score)
+            {
+                entry.Score = normalizedScore;
+                entry.ReconstructionError = Mathf.Max(0f, reconError);
+                entry.LikelyCause = likelyCause;
+                entry.Confidence = Mathf.Clamp01(confidence);
+                entry.Evidence = evidence;
+                entry.Recommendation = recommendation;
+                entry.ValidationLabel = validationLabel;
+            }
+        }
+
+        private static DateTimeOffset ParseAnomalyEventTime(string updatedAt)
+        {
+            if (DateTimeOffset.TryParse(
+                    updatedAt,
+                    CultureInfo.InvariantCulture,
+                    DateTimeStyles.AllowWhiteSpaces | DateTimeStyles.AssumeUniversal,
+                    out DateTimeOffset eventTime))
+            {
+                return eventTime;
+            }
+
+            return DateTimeOffset.Now;
+        }
+
+        private LineAnomalyLogState GetLineAnomalyLogState(int lineNumber)
+        {
+            int normalizedLineNumber = Mathf.Clamp(lineNumber, 1, 16);
+            if (!anomalyLogsByLine.TryGetValue(
+                    normalizedLineNumber,
+                    out LineAnomalyLogState state))
+            {
+                state = new LineAnomalyLogState();
+                anomalyLogsByLine[normalizedLineNumber] = state;
+            }
+            return state;
+        }
+
+        private static AnomalyLogEntry GetLatestAnomalyLogEntry(
+            LineAnomalyLogState state)
+        {
+            return state != null && state.Entries.Count > 0
+                ? state.Entries[0]
+                : null;
+        }
+
+        private static AnomalyLogEntry GetSelectedAnomalyLogEntry(
+            LineAnomalyLogState state)
+        {
+            if (state == null || state.Entries.Count == 0)
+                return null;
+
+            for (int index = 0; index < state.Entries.Count; index++)
+            {
+                if (string.Equals(
+                        state.Entries[index].EventId,
+                        state.SelectedEventId,
+                        StringComparison.Ordinal))
+                {
+                    return state.Entries[index];
+                }
+            }
+
+            return state.Entries[0];
+        }
+
+        public void SetLineRiskEvaluation(
+            int lineNumber,
+            float scorePercent,
+            float reconstructionRiskError,
+            bool alert,
+            int windowRows,
+            int maxWindowRows,
+            float historyCoveragePercent,
+            float p95,
+            float p99,
+            float alertThresholdPercent,
+            string status,
+            string recommendation,
+            string messageId,
+            string updatedAt,
+            int cycleId,
+            string cyclePhase)
+        {
+            LineRiskState state = GetLineRiskState(lineNumber);
+            string normalizedMessageId = string.IsNullOrWhiteSpace(messageId)
+                ? $"{lineNumber}:{cycleId}:{windowRows}:{updatedAt}"
+                : messageId;
+            if (string.Equals(
+                    state.LastMessageId,
+                    normalizedMessageId,
+                    StringComparison.Ordinal))
+            {
+                return;
+            }
+
+            state.LastMessageId = normalizedMessageId;
+            state.HasReceivedData = true;
+            state.ScorePercent = Mathf.Clamp(scorePercent, 0f, 100f);
+            state.ReconstructionError = Mathf.Max(0f, reconstructionRiskError);
+            state.Alert = alert;
+            state.WindowRows = Mathf.Max(0, windowRows);
+            state.MaxWindowRows = Mathf.Max(1, maxWindowRows);
+            state.HistoryCoveragePercent = Mathf.Clamp(
+                historyCoveragePercent,
+                0f,
+                100f);
+            state.P95 = Mathf.Max(0f, p95);
+            state.P99 = Mathf.Max(state.P95, p99);
+            state.AlertThresholdPercent = Mathf.Clamp(
+                alertThresholdPercent,
+                0f,
+                100f);
+            state.Status = string.IsNullOrWhiteSpace(status)
+                ? (alert ? "점검 권장" : "정상")
+                : status;
+            string displayRecommendation = string.IsNullOrWhiteSpace(recommendation)
+                ? string.Empty
+                : recommendation.Replace(
+                    "실시간 추세를 계속 모니터링하세요.",
+                    string.Empty).Trim();
+            state.Recommendation = string.IsNullOrWhiteSpace(displayRecommendation)
+                ? "-"
+                : displayRecommendation;
+            state.UpdatedAt = string.IsNullOrWhiteSpace(updatedAt)
+                ? "-"
+                : updatedAt;
+            state.CycleId = Mathf.Max(0, cycleId);
+            state.CyclePhase = string.IsNullOrWhiteSpace(cyclePhase)
+                ? "-"
+                : cyclePhase;
+
+            state.ScoreHistory.Add(state.ScorePercent);
+            if (state.ScoreHistory.Count > MaxRiskHistoryPoints)
+                state.ScoreHistory.RemoveAt(0);
+        }
+
+        private LineRiskState GetLineRiskState(int lineNumber)
+        {
+            int normalizedLineNumber = Mathf.Clamp(lineNumber, 1, 16);
+            if (!riskStatesByLine.TryGetValue(
+                    normalizedLineNumber,
+                    out LineRiskState state))
+            {
+                state = new LineRiskState();
+                riskStatesByLine[normalizedLineNumber] = state;
+            }
+
+            return state;
+        }
+
+        public void ClearAnomalyAnalysis()
+        {
+            GetLineAnomalyLogState(11).HasReceivedData = false;
+            currentRowIsAnomaly = false;
+            currentCycleIsAnomaly = false;
+            anomalyCycleId = 0;
+            anomalyCyclePhase = "-";
+            reconstructionError = 0f;
+            anomalyScore = 0f;
+            anomalyThreshold = 0f;
+            anomalyCycleRowCount = 0;
+            anomalyRowsInCycle = 0;
+            likelyAnomalyCause = "분석 데이터 수신 대기";
+            likelyCauseConfidence = 0f;
+            anomalyEvidence = "-";
+            anomalyRecommendation = "-";
+            anomalyValidationLabel = "-";
+            anomalyUpdatedAt = "-";
+            Array.Clear(anomalyScoreHistory, 0, anomalyScoreHistory.Length);
+        }
+
+        /// <summary>
         /// Clears every value populated by the live Solver/MQTT feed.
         /// </summary>
         public void SetAllLiveValuesToZero(bool clearHistory = true)
@@ -348,6 +843,7 @@ namespace DigitalTwin.Line11
             reliefValveWasOpen = false;
             warningAlarmCount = 0;
             reliefValveOpenCount = 0;
+            ClearAnomalyAnalysis();
 
             if (clearHistory)
                 ClearRealtimeHistory();
@@ -366,7 +862,7 @@ namespace DigitalTwin.Line11
         public void OpenDetail()
         {
             bool wasShowingSimulation = simulatedLineActive;
-            displayedLineNumber = 11;
+            displayedLineNumber = LiveTelemetryLineNumber;
             simulatedLineActive = false;
             if (wasShowingSimulation)
             {
@@ -379,11 +875,12 @@ namespace DigitalTwin.Line11
 
         public void OpenLineDetail(int lineNumber)
         {
-            if (!simulatedLineActive && displayedLineNumber == 11)
+            if (!simulatedLineActive &&
+                displayedLineNumber == LiveTelemetryLineNumber)
                 SaveLine11History();
 
             displayedLineNumber = Mathf.Clamp(lineNumber, 1, 16);
-            if (displayedLineNumber == 11)
+            if (displayedLineNumber == LiveTelemetryLineNumber)
             {
                 OpenDetail();
                 return;
@@ -464,6 +961,10 @@ namespace DigitalTwin.Line11
 
             if (line11Root == null && Time.frameCount % 30 == 0)
                 TryBindLine11();
+            else if (assetPreviewCamera == null &&
+                pressFrame != null &&
+                Time.frameCount % 30 == 0)
+                SetupAssetPreview();
 
             UpdateSimulatedNormalCycle(false);
             UpdateRealtimeHistory();
@@ -662,7 +1163,7 @@ namespace DigitalTwin.Line11
                 {
                     if (topViewController != null)
                         topViewController.OpenLineDetailFromNavigation(lineNumber);
-                    else if (lineNumber == 11)
+                    else if (lineNumber == LiveTelemetryLineNumber)
                         OpenDetail();
                     else
                         OpenLineDetail(lineNumber);
@@ -723,7 +1224,7 @@ namespace DigitalTwin.Line11
                 new Rect(navWidth + 14f, 5f, dashboardTabOffset - 24f, 34f),
                 simulatedLineActive
                     ? $"<  LINE {GetLineDisplayName(displayedLineNumber)}"
-                    : $"<  LINE {GetLineDisplayName(11)}  유압 프레스",
+                    : $"<  LINE {GetLineDisplayName(LiveTelemetryLineNumber)}  유압 프레스",
                 smallHeaderStyle);
 
             Rect dashboardTabs = new Rect(
@@ -732,11 +1233,6 @@ namespace DigitalTwin.Line11
                 Mathf.Max(240f, mainHeaderWidth - dashboardTabOffset - 220f),
                 36f);
             DrawDashboardTabs(dashboardTabs);
-
-            GUI.Label(
-                new Rect(Screen.width - 210f, 5f, 140f, 34f),
-                "실시간 모니터링",
-                subtitleStyle);
 
             if (GUI.Button(
                     new Rect(Screen.width - 42f, 8f, 28f, 28f),
@@ -776,16 +1272,21 @@ namespace DigitalTwin.Line11
                 DrawSchematicAndMetrics(schematicColumn);
                 DrawRealtimeColumn(realtimeColumn);
             }
+            else if (selectedDashboardTab == 1)
+            {
+                DrawAnomalyAnalysisPanel(
+                    new Rect(rightAreaX, bodyY, rightAreaWidth, bodyHeight));
+            }
             else
             {
-                DrawAnalysisWaitingPanel(
+                DrawPredictiveMaintenancePanel(
                     new Rect(rightAreaX, bodyY, rightAreaWidth, bodyHeight));
             }
         }
 
         private void DrawDashboardTabs(Rect rect)
         {
-            string[] labels = { "실시간 설비", "이상·원인 분석", "예지보전" };
+            string[] labels = { "실시간 설비", "이상 탐지 로그", "위험도 감지" };
             const float gap = 4f;
             const float horizontalPadding = 6f;
             float availableWidth = rect.width - horizontalPadding * 2f - gap * (labels.Length - 1);
@@ -812,9 +1313,9 @@ namespace DigitalTwin.Line11
         private void DrawAnalysisWaitingPanel(Rect rect)
         {
             DrawColorRect(rect, PanelColor);
-            string title = selectedDashboardTab == 1 ? "이상·원인 분석" : "예지보전";
+            string title = selectedDashboardTab == 1 ? "이상 탐지 로그" : "위험도 감지";
             string message = selectedDashboardTab == 1
-                ? "이상 점수와 추정 원인 분석 데이터 수신 대기"
+                ? "이상탐지 결과 수신 대기"
                 : "잔여 수명과 정비 예측 데이터 수신 대기";
 
             GUI.Label(
@@ -825,6 +1326,618 @@ namespace DigitalTwin.Line11
                 new Rect(rect.x + 14f, rect.y + 48f, rect.width - 28f, 30f),
                 message,
                 tableHeaderStyle);
+        }
+
+        private void DrawPredictiveMaintenancePanel(Rect rect)
+        {
+            LineRiskState state = GetLineRiskState(displayedLineNumber);
+            DrawColorRect(rect, PanelColor);
+            GUI.Label(
+                new Rect(rect.x + 14f, rect.y + 8f, rect.width - 28f, 28f),
+                $"위험도 감지 · LINE {GetLineDisplayName(displayedLineNumber)}",
+                smallHeaderStyle);
+
+            if (!state.HasReceivedData)
+            {
+                GUI.Label(
+                    new Rect(rect.x + 14f, rect.y + 48f, rect.width - 28f, 30f),
+                    "위험도 모델 추론 결과 수신 대기",
+                    tableHeaderStyle);
+                return;
+            }
+
+            Color riskColor = GetRiskColor(state);
+            const float gap = 8f;
+            float trendY = rect.y + 42f;
+            float trendHeight = Mathf.Clamp(rect.height * 0.50f, 220f, 360f);
+            Rect trendRect = new Rect(
+                rect.x + 14f,
+                trendY,
+                rect.width - 28f,
+                trendHeight);
+            DrawRiskTrend(trendRect, state, riskColor);
+
+            float lowerY = trendRect.yMax + gap;
+            float lowerHeight = Mathf.Max(110f, rect.yMax - lowerY - 12f);
+            float detailWidth = (rect.width - 36f) * 0.46f;
+            Rect detailRect = new Rect(rect.x + 14f, lowerY, detailWidth, lowerHeight);
+            Rect recommendationRect = new Rect(
+                detailRect.xMax + gap,
+                lowerY,
+                rect.xMax - detailRect.xMax - gap - 14f,
+                lowerHeight);
+            DrawRiskDetails(detailRect, state);
+            DrawRiskRecommendation(recommendationRect, state, riskColor);
+        }
+
+        private void DrawRiskTrend(Rect rect, LineRiskState state, Color lineColor)
+        {
+            DrawColorRect(rect, HeaderColor);
+            GUI.Label(
+                new Rect(rect.x + 12f, rect.y + 5f, rect.width - 24f, 24f),
+                "위험도 추세",
+                smallHeaderStyle);
+            Rect graph = new Rect(
+                rect.x + 42f,
+                rect.y + 40f,
+                rect.width - 58f,
+                rect.height - 58f);
+            DrawColorRect(graph, new Color32(31, 35, 39, 255));
+            for (int index = 1; index < 4; index++)
+            {
+                float y = graph.y + graph.height * index / 4f;
+                DrawColorRect(
+                    new Rect(graph.x, y, graph.width, 1f),
+                    new Color32(78, 84, 89, 110));
+            }
+
+            float alertY = graph.yMax -
+                Mathf.Clamp01(state.AlertThresholdPercent / 100f) * graph.height;
+            DrawColorRect(
+                new Rect(graph.x, alertY, graph.width, 2f),
+                GetDetailStatusColor(
+                    DigitalTwin.View.FactoryTopViewCamera.FactoryStatus.Caution));
+            GUI.Label(
+                new Rect(rect.x + 4f, alertY - 9f, 36f, 18f),
+                $"{state.AlertThresholdPercent:0}",
+                footnoteStyle);
+            GUI.Label(
+                new Rect(rect.x + 8f, graph.y - 8f, 30f, 18f),
+                "100",
+                footnoteStyle);
+            GUI.Label(
+                new Rect(rect.x + 15f, graph.yMax - 9f, 22f, 18f),
+                "0",
+                footnoteStyle);
+
+            int pointCount = state.ScoreHistory.Count;
+            if (pointCount == 1)
+            {
+                float pointY = graph.yMax -
+                    state.ScoreHistory[0] / 100f * graph.height;
+                DrawColorRect(
+                    new Rect(graph.x - 2f, pointY - 2f, 5f, 5f),
+                    lineColor);
+                return;
+            }
+
+            for (int index = 1; index < pointCount; index++)
+            {
+                float x0 = graph.x +
+                    graph.width * (index - 1) / Mathf.Max(1f, pointCount - 1f);
+                float x1 = graph.x +
+                    graph.width * index / Mathf.Max(1f, pointCount - 1f);
+                float y0 = graph.yMax -
+                    Mathf.Clamp01(state.ScoreHistory[index - 1] / 100f) * graph.height;
+                float y1 = graph.yMax -
+                    Mathf.Clamp01(state.ScoreHistory[index] / 100f) * graph.height;
+                DrawLine(new Vector2(x0, y0), new Vector2(x1, y1), lineColor, 2f);
+            }
+        }
+
+        private void DrawRiskDetails(Rect rect, LineRiskState state)
+        {
+            DrawColorRect(rect, HeaderColor);
+            GUI.Label(
+                new Rect(rect.x + 12f, rect.y + 5f, rect.width - 24f, 24f),
+                "모델 판정 상세",
+                smallHeaderStyle);
+            float y = rect.y + 34f;
+            float rowHeight = Mathf.Max(
+                24f,
+                Mathf.Min(34f, (rect.height - 42f) / 5f));
+            DrawRiskDetailRow(
+                rect,
+                ref y,
+                rowHeight,
+                "실시간 위험도",
+                $"{state.ScorePercent:0.0}%");
+            DrawRiskDetailRow(
+                rect,
+                ref y,
+                rowHeight,
+                "재구성 오차",
+                $"{state.ReconstructionError:0.000000}");
+            DrawRiskDetailRow(rect, ref y, rowHeight, "정상 p95", $"{state.P95:0.000000}");
+            DrawRiskDetailRow(rect, ref y, rowHeight, "정상 p99", $"{state.P99:0.000000}");
+            DrawRiskDetailRow(rect, ref y, rowHeight, "공정", state.CyclePhase);
+        }
+
+        private void DrawRiskDetailRow(
+            Rect panel,
+            ref float y,
+            float rowHeight,
+            string label,
+            string value)
+        {
+            DrawColorRect(
+                new Rect(panel.x + 10f, y, panel.width - 20f, rowHeight - 2f),
+                RowColor);
+            GUI.Label(
+                new Rect(panel.x + 18f, y, panel.width * 0.44f, rowHeight - 2f),
+                label,
+                bodyStyle);
+            GUIStyle rightStyle = new GUIStyle(bodyStyle)
+            {
+                alignment = TextAnchor.MiddleRight,
+                fontStyle = FontStyle.Bold
+            };
+            GUI.Label(
+                new Rect(
+                    panel.x + panel.width * 0.48f,
+                    y,
+                    panel.width * 0.46f,
+                    rowHeight - 2f),
+                value,
+                rightStyle);
+            y += rowHeight;
+        }
+
+        private void DrawRiskRecommendation(
+            Rect rect,
+            LineRiskState state,
+            Color riskColor)
+        {
+            DrawColorRect(rect, HeaderColor);
+            DrawColorRect(new Rect(rect.x, rect.y, 4f, rect.height), riskColor);
+            GUI.Label(
+                new Rect(rect.x + 14f, rect.y + 6f, rect.width - 28f, 24f),
+                "정비 권장사항",
+                smallHeaderStyle);
+            GUI.Label(
+                new Rect(rect.x + 14f, rect.y + 36f, rect.width - 28f, rect.height - 48f),
+                state.Recommendation,
+                bodyStyle);
+        }
+
+        private static Color GetRiskColor(LineRiskState state)
+        {
+            if (state.ScorePercent >= 80f)
+            {
+                return GetDetailStatusColor(
+                    DigitalTwin.View.FactoryTopViewCamera.FactoryStatus.Critical);
+            }
+
+            if (state.Alert)
+            {
+                return GetDetailStatusColor(
+                    DigitalTwin.View.FactoryTopViewCamera.FactoryStatus.Caution);
+            }
+
+            return SuccessColor;
+        }
+
+        private void DrawAnomalyAnalysisPanel(Rect rect)
+        {
+            LineAnomalyLogState lineState =
+                GetLineAnomalyLogState(displayedLineNumber);
+            DrawColorRect(rect, PanelColor);
+            GUI.Label(
+                new Rect(rect.x + 14f, rect.y + 8f, rect.width - 28f, 28f),
+                $"이상 탐지 로그 · LINE {GetLineDisplayName(displayedLineNumber)}",
+                smallHeaderStyle);
+
+            GUI.Label(
+                new Rect(rect.xMax - 170f, rect.y + 8f, 156f, 25f),
+                $"총건 {lineState.TotalEventCount}건",
+                tableHeaderStyle);
+
+            if (lineState.Entries.Count == 0)
+            {
+                string emptyMessage = lineState.HasReceivedData
+                    ? "현재까지 이상으로 탐지된 결과가 없습니다."
+                    : "이상탐지 결과 수신 대기";
+                GUI.Label(
+                    new Rect(rect.x + 14f, rect.y + 48f, rect.width - 28f, 30f),
+                    emptyMessage,
+                    tableHeaderStyle);
+                return;
+            }
+
+            const float padding = 14f;
+            const float gap = 8f;
+            float contentY = rect.y + 42f;
+            float contentHeight = rect.yMax - padding - contentY;
+            float listWidth = Mathf.Clamp(rect.width * 0.43f, 310f, 470f);
+            Rect listPanel = new Rect(
+                rect.x + padding,
+                contentY,
+                listWidth,
+                contentHeight);
+            Rect detailPanelRect = new Rect(
+                listPanel.xMax + gap,
+                contentY,
+                rect.xMax - padding - listPanel.xMax - gap,
+                contentHeight);
+
+            DrawAnomalyLogList(listPanel, lineState);
+            DrawAnomalyLogDetail(
+                detailPanelRect,
+                GetSelectedAnomalyLogEntry(lineState),
+                lineState);
+        }
+
+        private void DrawAnomalyLogList(Rect rect, LineAnomalyLogState lineState)
+        {
+            DrawColorRect(rect, HeaderColor);
+            GUI.Label(
+                new Rect(rect.x + 12f, rect.y + 4f, rect.width - 130f, 26f),
+                "탐지 시각 · 추정 원인",
+                smallHeaderStyle);
+            Rect sortButton = new Rect(rect.xMax - 112f, rect.y + 3f, 100f, 27f);
+            if (GUI.Button(
+                    sortButton,
+                    lineState.NewestFirst ? "최신순 ↓" : "오래된순 ↑",
+                    viewModeButtonStyle))
+            {
+                lineState.NewestFirst = !lineState.NewestFirst;
+                lineState.LogScrollPosition = Vector2.zero;
+            }
+
+            Rect viewport = new Rect(
+                rect.x + 6f,
+                rect.y + 34f,
+                rect.width - 12f,
+                rect.height - 40f);
+            const float rowHeight = 72f;
+            Rect content = new Rect(
+                0f,
+                0f,
+                viewport.width - 18f,
+                Mathf.Max(viewport.height, lineState.Entries.Count * rowHeight));
+            lineState.LogScrollPosition = GUI.BeginScrollView(
+                viewport,
+                lineState.LogScrollPosition,
+                content);
+
+            for (int displayIndex = 0;
+                 displayIndex < lineState.Entries.Count;
+                 displayIndex++)
+            {
+                int sourceIndex = lineState.NewestFirst
+                    ? displayIndex
+                    : lineState.Entries.Count - 1 - displayIndex;
+                AnomalyLogEntry entry = lineState.Entries[sourceIndex];
+                bool isSelected = string.Equals(
+                    entry.EventId,
+                    lineState.SelectedEventId,
+                    StringComparison.Ordinal);
+                Rect row = new Rect(0f, displayIndex * rowHeight, content.width, rowHeight - 5f);
+                GUIStyle rowButtonStyle = isSelected
+                    ? selectedDetailNavigationButtonStyle
+                    : detailNavigationButtonStyle;
+                if (GUI.Button(row, GUIContent.none, rowButtonStyle))
+                {
+                    lineState.SelectedEventId = entry.EventId;
+                    lineState.DetailScrollPosition = Vector2.zero;
+                }
+
+                Color severityColor = entry.CycleIsAnomaly
+                    ? GetDetailStatusColor(
+                        DigitalTwin.View.FactoryTopViewCamera.FactoryStatus.Critical)
+                    : GetDetailStatusColor(
+                        DigitalTwin.View.FactoryTopViewCamera.FactoryStatus.Caution);
+                DrawColorRect(new Rect(row.x, row.y, 4f, row.height), severityColor);
+                GUI.Label(
+                    new Rect(row.x + 12f, row.y + 4f, row.width - 22f, 18f),
+                    FormatAnomalyLogTime(entry.EventTime),
+                    footnoteStyle);
+                GUI.Label(
+                    new Rect(row.x + 12f, row.y + 22f, row.width - 22f, 20f),
+                    $"{entry.CyclePhase} · score {entry.Score:0.000}",
+                    tableHeaderStyle);
+                GUI.Label(
+                    new Rect(row.x + 12f, row.y + 43f, row.width - 22f, 18f),
+                    entry.LikelyCause,
+                    bodyStyle);
+            }
+
+            GUI.EndScrollView();
+        }
+
+        private void DrawAnomalyLogDetail(
+            Rect rect,
+            AnomalyLogEntry entry,
+            LineAnomalyLogState lineState)
+        {
+            DrawColorRect(rect, HeaderColor);
+            GUI.Label(
+                new Rect(rect.x + 12f, rect.y + 4f, rect.width - 24f, 26f),
+                "상세보기",
+                smallHeaderStyle);
+            if (entry == null)
+                return;
+
+            Rect viewport = new Rect(
+                rect.x + 8f,
+                rect.y + 34f,
+                rect.width - 16f,
+                rect.height - 42f);
+            Rect content = new Rect(0f, 0f, viewport.width - 18f, 390f);
+            lineState.DetailScrollPosition = GUI.BeginScrollView(
+                viewport,
+                lineState.DetailScrollPosition,
+                content);
+
+            DigitalTwin.View.FactoryTopViewCamera.FactoryStatus status =
+                entry.CycleIsAnomaly
+                    ? DigitalTwin.View.FactoryTopViewCamera.FactoryStatus.Critical
+                    : DigitalTwin.View.FactoryTopViewCamera.FactoryStatus.Caution;
+            Rect statusChip = new Rect(0f, 0f, content.width, 32f);
+            DrawColorRect(statusChip, GetDetailStatusColor(status));
+            GUI.Label(
+                statusChip,
+                entry.CycleIsAnomaly ? "이상" : "주의",
+                operatingStatusStyle);
+
+            float y = 40f;
+            const float rowHeight = 28f;
+            DrawAnomalyDetailRow(content, ref y, rowHeight, "탐지 시각",
+                FormatAnomalyLogTime(entry.EventTime));
+            DrawAnomalyDetailRow(content, ref y, rowHeight, "공정",
+                entry.CyclePhase);
+            DrawAnomalyDetailRow(content, ref y, rowHeight, "이상 점수",
+                $"{entry.Score:0.000}");
+            DrawAnomalyDetailRow(content, ref y, rowHeight, "재구성 오차",
+                $"{entry.ReconstructionError:0.000000}");
+            DrawAnomalyDetailRow(content, ref y, rowHeight, "판정 임계값",
+                $"{entry.Threshold:0.000000}");
+            DrawAnomalyDetailRow(content, ref y, rowHeight, "추정 원인",
+                $"{entry.LikelyCause} · {entry.Confidence * 100f:0}%");
+
+            y += 6f;
+            DrawAnomalyDetailTextBlock(content, ref y, "판단 근거", entry.Evidence, 68f);
+            DrawAnomalyDetailTextBlock(content, ref y, "권장 조치", entry.Recommendation, 78f);
+            GUI.EndScrollView();
+        }
+
+        private void DrawAnomalyDetailRow(
+            Rect content,
+            ref float y,
+            float rowHeight,
+            string label,
+            string value)
+        {
+            DrawColorRect(new Rect(0f, y, content.width, rowHeight - 2f), RowColor);
+            const float labelRatio = 0.27f;
+            GUI.Label(
+                new Rect(10f, y, content.width * labelRatio - 10f, rowHeight - 2f),
+                label,
+                bodyStyle);
+            Rect valueRect = new Rect(
+                content.width * labelRatio,
+                y,
+                content.width * (1f - labelRatio) - 10f,
+                rowHeight - 2f);
+            GUIStyle valueTextStyle = new GUIStyle(bodyStyle)
+            {
+                alignment = TextAnchor.MiddleRight,
+                fontStyle = FontStyle.Bold,
+                wordWrap = false,
+                clipping = TextClipping.Clip
+            };
+            GUIContent valueContent = new GUIContent(value);
+            while (valueTextStyle.fontSize > 9 &&
+                   valueTextStyle.CalcSize(valueContent).x > valueRect.width - 8f)
+            {
+                valueTextStyle.fontSize--;
+            }
+            GUI.Label(valueRect, valueContent, valueTextStyle);
+            y += rowHeight;
+        }
+
+        private void DrawAnomalyDetailTextBlock(
+            Rect content,
+            ref float y,
+            string title,
+            string text,
+            float height)
+        {
+            DrawColorRect(new Rect(0f, y, content.width, height), RowColor);
+            GUI.Label(new Rect(10f, y + 3f, content.width - 20f, 20f), title, tableHeaderStyle);
+            GUI.Label(
+                new Rect(10f, y + 25f, content.width - 20f, height - 28f),
+                string.IsNullOrWhiteSpace(text) ? "-" : text,
+                bodyStyle);
+            y += height + 6f;
+        }
+
+        private static string FormatAnomalyLogTime(DateTimeOffset timestamp)
+        {
+            return timestamp.ToLocalTime().ToString(
+                "yyyy-MM-dd HH:mm:ss",
+                CultureInfo.InvariantCulture);
+        }
+
+        private void DrawAnalysisMetricCard(Rect rect, string label, string value, Color accent)
+        {
+            DrawColorRect(rect, HeaderColor);
+            DrawColorRect(new Rect(rect.x, rect.yMax - 3f, rect.width, 3f), accent);
+            GUI.Label(
+                new Rect(rect.x + 8f, rect.y + 5f, rect.width - 16f, 22f),
+                label,
+                tableHeaderStyle);
+            GUIStyle cardValueStyle = new GUIStyle(valueStyle);
+            cardValueStyle.normal.textColor = accent;
+            GUI.Label(
+                new Rect(rect.x + 8f, rect.y + 28f, rect.width - 16f, 38f),
+                value,
+                cardValueStyle);
+        }
+
+        private void DrawAnomalyScoreTrend(Rect rect)
+        {
+            DrawColorRect(rect, HeaderColor);
+            GUI.Label(
+                new Rect(rect.x + 12f, rect.y + 4f, rect.width - 24f, 26f),
+                "실시간 이상 점수 추세",
+                smallHeaderStyle);
+            GUI.Label(
+                new Rect(rect.x + 12f, rect.y + 27f, rect.width - 24f, 18f),
+                "score=1.0이 행 단위 이상 판정선 · 그래프는 log10(1+score)",
+                footnoteStyle);
+
+            Rect graph = new Rect(rect.x + 14f, rect.y + 50f, rect.width - 28f, rect.height - 64f);
+            DrawColorRect(graph, new Color32(31, 35, 39, 255));
+            for (int index = 1; index < 4; index++)
+            {
+                float y = graph.y + graph.height * index / 4f;
+                DrawColorRect(
+                    new Rect(graph.x, y, graph.width, 1f),
+                    new Color32(78, 84, 89, 110));
+            }
+
+            float maxLogValue = Mathf.Log10(
+                1f + Mathf.Max(2f, MaxHistoryValue(anomalyScoreHistory)));
+            float thresholdY = graph.yMax -
+                Mathf.Log10(2f) / Mathf.Max(0.001f, maxLogValue) * graph.height;
+            DrawColorRect(
+                new Rect(graph.x, thresholdY, graph.width, 1.5f),
+                GetDetailStatusColor(DigitalTwin.View.FactoryTopViewCamera.FactoryStatus.Caution));
+
+            for (int index = 1; index < anomalyScoreHistory.Length; index++)
+            {
+                float previous = Mathf.Log10(1f + Mathf.Max(0f, anomalyScoreHistory[index - 1]));
+                float current = Mathf.Log10(1f + Mathf.Max(0f, anomalyScoreHistory[index]));
+                Vector2 from = new Vector2(
+                    graph.x + graph.width * (index - 1) / (anomalyScoreHistory.Length - 1),
+                    graph.yMax - previous / maxLogValue * graph.height);
+                Vector2 to = new Vector2(
+                    graph.x + graph.width * index / (anomalyScoreHistory.Length - 1),
+                    graph.yMax - current / maxLogValue * graph.height);
+                DrawLine(from, to, AccentColor, 2f);
+            }
+        }
+
+        private void DrawAnomalyCycleSummary(
+            Rect rect,
+            DigitalTwin.View.FactoryTopViewCamera.FactoryStatus status)
+        {
+            DrawColorRect(rect, HeaderColor);
+            GUI.Label(
+                new Rect(rect.x + 12f, rect.y + 4f, rect.width - 24f, 26f),
+                "현재 사이클 판정",
+                smallHeaderStyle);
+
+            float y = rect.y + 38f;
+            float rowHeight = 28f;
+            DrawAnalysisSummaryRow(rect, ref y, rowHeight, "사이클", $"{anomalyCycleId}");
+            DrawAnalysisSummaryRow(rect, ref y, rowHeight, "공정 단계", anomalyCyclePhase);
+            DrawAnalysisSummaryRow(
+                rect,
+                ref y,
+                rowHeight,
+                "이상 행",
+                $"{anomalyRowsInCycle} / {anomalyCycleRowCount}");
+            DrawAnalysisSummaryRow(
+                rect,
+                ref y,
+                rowHeight,
+                "사이클 기준",
+                $"{anomalyKOfN}개 이상");
+
+            Rect chip = new Rect(rect.x + 12f, rect.yMax - 38f, rect.width - 24f, 27f);
+            DrawColorRect(chip, GetDetailStatusColor(status));
+            GUI.Label(chip, GetDetailStatusText(status), operatingStatusStyle);
+        }
+
+        private void DrawAnalysisSummaryRow(
+            Rect panel,
+            ref float y,
+            float rowHeight,
+            string label,
+            string value)
+        {
+            DrawColorRect(
+                new Rect(panel.x + 12f, y, panel.width - 24f, rowHeight - 2f),
+                RowColor);
+            GUI.Label(
+                new Rect(panel.x + 20f, y, panel.width * 0.42f, rowHeight - 2f),
+                label,
+                bodyStyle);
+            GUIStyle rightStyle = new GUIStyle(bodyStyle)
+            {
+                alignment = TextAnchor.MiddleRight,
+                fontStyle = FontStyle.Bold
+            };
+            GUI.Label(
+                new Rect(
+                    panel.x + panel.width * 0.42f,
+                    y,
+                    panel.width * 0.50f,
+                    rowHeight - 2f),
+                value,
+                rightStyle);
+            y += rowHeight;
+        }
+
+        private void DrawAnomalyCausePanel(
+            Rect rect,
+            DigitalTwin.View.FactoryTopViewCamera.FactoryStatus status)
+        {
+            DrawColorRect(rect, HeaderColor);
+            DrawColorRect(
+                new Rect(rect.x, rect.y, 4f, rect.height),
+                GetDetailStatusColor(status));
+            GUI.Label(
+                new Rect(rect.x + 14f, rect.y + 5f, rect.width - 28f, 25f),
+                $"추정 원인 · {likelyAnomalyCause}  ({likelyCauseConfidence * 100f:0}%)",
+                smallHeaderStyle);
+
+            float halfWidth = (rect.width - 36f) * 0.5f;
+            GUI.Label(
+                new Rect(rect.x + 14f, rect.y + 36f, halfWidth, 20f),
+                "판단 근거",
+                tableHeaderStyle);
+            GUI.Label(
+                new Rect(rect.x + 14f, rect.y + 58f, halfWidth, rect.height - 82f),
+                anomalyEvidence,
+                bodyStyle);
+            GUI.Label(
+                new Rect(rect.x + 22f + halfWidth, rect.y + 36f, halfWidth, 20f),
+                "권장 조치",
+                tableHeaderStyle);
+            GUI.Label(
+                new Rect(
+                    rect.x + 22f + halfWidth,
+                    rect.y + 58f,
+                    halfWidth,
+                    rect.height - 82f),
+                anomalyRecommendation,
+                bodyStyle);
+
+            GUI.Label(
+                new Rect(rect.x + 14f, rect.yMax - 23f, rect.width - 28f, 18f),
+                $"시뮬레이션 검증 라벨: {anomalyValidationLabel}  ·  갱신: {anomalyUpdatedAt}",
+                footnoteStyle);
+        }
+
+        private static float MaxHistoryValue(float[] values)
+        {
+            float maximum = 0f;
+            for (int index = 0; index < values.Length; index++)
+                maximum = Mathf.Max(maximum, values[index]);
+            return maximum;
         }
 
         private void DrawPressCycleColumn(Rect column)
@@ -853,8 +1966,22 @@ namespace DigitalTwin.Line11
                 "설비 상태",
                 smallHeaderStyle);
 
+            LineAnomalyLogState lineState =
+                GetLineAnomalyLogState(displayedLineNumber);
+            bool lineCycleIsAnomaly =
+                lineState.IsAnomalyActive &&
+                lineState.ActiveEntry != null &&
+                lineState.ActiveEntry.CycleIsAnomaly;
+            bool lineHasActiveAnomaly = lineState.IsAnomalyActive;
+            bool lineSolverWarning =
+                displayedLineNumber == LiveTelemetryLineNumber &&
+                solverWarningWasActive;
             DigitalTwin.View.FactoryTopViewCamera.FactoryStatus equipmentStatus =
-                DigitalTwin.View.FactoryTopViewCamera.FactoryStatus.Normal;
+                lineCycleIsAnomaly
+                    ? DigitalTwin.View.FactoryTopViewCamera.FactoryStatus.Critical
+                    : lineHasActiveAnomaly || lineSolverWarning
+                        ? DigitalTwin.View.FactoryTopViewCamera.FactoryStatus.Caution
+                        : DigitalTwin.View.FactoryTopViewCamera.FactoryStatus.Normal;
             Rect statusChip = new Rect(rect.x + 12f, rect.y + 38f, rect.width - 24f, 26f);
             DrawColorRect(statusChip, GetDetailStatusColor(equipmentStatus));
             GUI.Label(statusChip, GetDetailStatusText(equipmentStatus), operatingStatusStyle);
@@ -944,6 +2071,14 @@ namespace DigitalTwin.Line11
             float secondX = firstX + cardWidth + gap;
             float firstY = rect.y + 34f;
             float secondY = firstY + cardHeight + gap;
+            LineAnomalyLogState lineAnomalyState =
+                GetLineAnomalyLogState(displayedLineNumber);
+            int operationalAlarmCount =
+                displayedLineNumber == LiveTelemetryLineNumber
+                    ? warningAlarmCount
+                    : 0;
+            int totalAlarmCount =
+                operationalAlarmCount + lineAnomalyState.TotalEventCount;
 
             DrawConditionCard(new Rect(firstX, firstY, cardWidth, cardHeight),
                 "오일 온도", $"{oilTemperatureC:0.0} C", SuccessColor);
@@ -952,7 +2087,7 @@ namespace DigitalTwin.Line11
             DrawConditionCard(new Rect(firstX, secondY, cardWidth, cardHeight),
                 "릴리프 밸브 개도 횟수", $"{reliefValveOpenCount}회", SuccessColor);
             DrawConditionCard(new Rect(secondX, secondY, cardWidth, cardHeight),
-                "경고", $"{warningAlarmCount}건", new Color32(216, 110, 76, 255));
+                "알람", $"{totalAlarmCount}건", new Color32(216, 110, 76, 255));
         }
 
         private void DrawConditionCard(Rect rect, string label, string value, Color accent)
@@ -1079,12 +2214,14 @@ namespace DigitalTwin.Line11
         private float GetSimulatedCycleElapsed()
         {
             float elapsed = Mathf.Max(0f, Time.unscaledTime - simulatedCycleEpochTime);
-            if (displayedLineNumber == 11 || normalCycleSamples.Count == 0)
+            if (displayedLineNumber == LiveTelemetryLineNumber ||
+                normalCycleSamples.Count == 0)
                 return elapsed;
 
             // Every simulated line shares the same normal-cycle CSV, but starts at a
             // deterministic phase so adjacent lines do not show identical values.
-            int simulatedLineOrdinal = displayedLineNumber > 11
+            int simulatedLineOrdinal =
+                displayedLineNumber > LiveTelemetryLineNumber
                 ? displayedLineNumber - 2
                 : displayedLineNumber - 1;
             int wholeSecondOffset =
@@ -1416,13 +2553,54 @@ namespace DigitalTwin.Line11
                 "권장사항 / 알람", smallHeaderStyle);
 
             InitializeAlertTimestamps();
-
-            string[] alerts =
+            LineAnomalyLogState lineState =
+                GetLineAnomalyLogState(displayedLineNumber);
+            AnomalyLogEntry latestAnomaly = GetLatestAnomalyLogEntry(lineState);
+            string[] alerts;
+            Color[] alertColors;
+            if (latestAnomaly != null)
             {
-                $"{alertTimestamps[0]:yyyy-MM-dd HH:mm:ss}  안전 경고: 유압 점검이 필요합니다",
-                $"{alertTimestamps[1]:yyyy-MM-dd HH:mm:ss}  밸브-탱크 리턴 유량 안정성을 확인하세요",
-                $"{alertTimestamps[2]:yyyy-MM-dd HH:mm:ss}  실린더 씰 온도가 정상 범위입니다"
-            };
+                string detectedAt = FormatAnomalyLogTime(latestAnomaly.EventTime);
+                AnomalyLogEntry previousAnomaly =
+                    lineState.Entries.Count > 1 ? lineState.Entries[1] : null;
+                alerts = new[]
+                {
+                    $"{detectedAt}  [이상탐지] {latestAnomaly.CyclePhase} · " +
+                    $"{latestAnomaly.LikelyCause} " +
+                    $"(score {latestAnomaly.Score:0.000})",
+                    $"{detectedAt}  [권장조치] {latestAnomaly.Recommendation}",
+                    previousAnomaly != null
+                        ? $"{FormatAnomalyLogTime(previousAnomaly.EventTime)}  [이상탐지] " +
+                          $"{previousAnomaly.CyclePhase} · {previousAnomaly.LikelyCause}"
+                        : $"{alertTimestamps[2]:yyyy-MM-dd HH:mm:ss}  실시간 이상탐지 모니터링 중"
+                };
+                alertColors = new Color[]
+                {
+                    GetDetailStatusColor(
+                        latestAnomaly.CycleIsAnomaly
+                            ? DigitalTwin.View.FactoryTopViewCamera.FactoryStatus.Critical
+                            : DigitalTwin.View.FactoryTopViewCamera.FactoryStatus.Caution),
+                    new Color32(238, 159, 56, 255),
+                    previousAnomaly != null
+                        ? (Color)new Color32(216, 110, 76, 255)
+                        : SuccessColor
+                };
+            }
+            else
+            {
+                alerts = new[]
+                {
+                    $"{alertTimestamps[0]:yyyy-MM-dd HH:mm:ss}  안전 경고: 유압 점검이 필요합니다",
+                    $"{alertTimestamps[1]:yyyy-MM-dd HH:mm:ss}  밸브-탱크 리턴 유량 안정성을 확인하세요",
+                    $"{alertTimestamps[2]:yyyy-MM-dd HH:mm:ss}  이상탐지 결과 수신 대기"
+                };
+                alertColors = new Color[]
+                {
+                    (Color)new Color32(216, 110, 76, 255),
+                    new Color32(216, 110, 76, 255),
+                    SuccessColor
+                };
+            }
 
             float gap = 5f;
             float rowHeight = Mathf.Max(30f, (rect.height - 42f - gap * 2f) / 3f);
@@ -1430,8 +2608,9 @@ namespace DigitalTwin.Line11
             for (int index = 0; index < alerts.Length; index++)
             {
                 DrawColorRect(new Rect(rect.x + 10f, y, rect.width - 20f, rowHeight), RowColor);
-                DrawColorRect(new Rect(rect.x + 10f, y, 4f, rowHeight),
-                    index < 2 ? (Color)new Color32(216, 110, 76, 255) : SuccessColor);
+                DrawColorRect(
+                    new Rect(rect.x + 10f, y, 4f, rowHeight),
+                    alertColors[index]);
                 GUI.Label(new Rect(rect.x + 20f, y + 2f, rect.width - 34f, rowHeight - 4f),
                     alerts[index], bodyStyle);
                 y += rowHeight + gap;
@@ -1554,7 +2733,7 @@ namespace DigitalTwin.Line11
             if (simulatedLineActive)
                 return;
 
-            if (Time.unscaledTime - lastHistoryUpdate < 0.65f || metrics.Count == 0)
+            if (Time.unscaledTime - lastHistoryUpdate < 1f || metrics.Count == 0)
                 return;
 
             lastHistoryUpdate = Time.unscaledTime;
@@ -1922,6 +3101,12 @@ namespace DigitalTwin.Line11
             if (assetPreviewCamera != null || pressFrame == null)
                 return;
 
+            if (assetPreviewClone != null)
+            {
+                Destroy(assetPreviewClone);
+                assetPreviewClone = null;
+            }
+
             Transform sourceRoot = pressFrame.parent != null ? pressFrame.parent : pressFrame;
             assetPreviewClone = Instantiate(sourceRoot.gameObject);
             assetPreviewClone.name = "Line11 Hydraulic Press UI Preview";
@@ -1932,7 +3117,12 @@ namespace DigitalTwin.Line11
                 previewCollider.enabled = false;
 
             foreach (MonoBehaviour previewBehaviour in assetPreviewClone.GetComponentsInChildren<MonoBehaviour>(true))
-                previewBehaviour.enabled = false;
+            {
+                // Imported prefabs can contain a missing-script slot, which Unity
+                // returns as a null MonoBehaviour entry.
+                if (previewBehaviour != null)
+                    previewBehaviour.enabled = false;
+            }
 
             Transform previewRoot = assetPreviewClone.transform;
             Renderer[] renderers = previewRoot.GetComponentsInChildren<Renderer>(true);
