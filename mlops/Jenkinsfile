@@ -37,6 +37,7 @@ pipeline {
         REGISTRY_PREFIX = ''
         REGISTRY_HOST = ''
         MLOPS_DIR = 'mlops'
+        DOCKER_CONFIG = '/home/people/jenkins-agent/.docker-ci'
         TIMESCALE_PASSWORD = "ci-only-${BUILD_NUMBER}"
         TIMESCALE_DB = 'digital_twin'
         TIMESCALE_USER = 'digital_twin'
@@ -72,7 +73,10 @@ pipeline {
             steps {
                 dir("${env.MLOPS_DIR}") {
                     sh '''
-                        mkdir -p reports
+                        mkdir -p "$DOCKER_CONFIG" reports
+                        chmod 700 "$DOCKER_CONFIG"
+                        printf '{}\\n' > "$DOCKER_CONFIG/config.json"
+                        chmod 600 "$DOCKER_CONFIG/config.json"
                         docker compose -f compose.yaml -f compose.ci.yaml config --quiet
                         docker run --rm \
                           -v "$PWD:/workspace" \
