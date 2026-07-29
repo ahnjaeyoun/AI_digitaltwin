@@ -23,6 +23,8 @@ services:
         && exec python mqtt/Publisher.py
         --interval ${CI_PUBLISH_INTERVAL_SECONDS:-0.01}
         --repeat 1
+        --limit ${CI_PUBLISH_LIMIT:-1000}
+        --log-every ${CI_PUBLISH_LOG_EVERY:-100}
         --line-number ${PRESS_LINE_NUMBER:-7}
 
   ci-tester:

@@ -12,5 +12,6 @@ chmod 0777 reports
 docker compose ${compose_files} config --quiet
 docker compose ${compose_files} up -d --wait broker timescaledb
 docker compose ${compose_files} up -d raw-solver anomaly risk
-docker compose ${compose_files} --profile simulation run --rm raw-publisher
+timeout "${CI_PUBLISH_TIMEOUT_SECONDS:-90}" \
+  docker compose ${compose_files} --profile simulation run --rm raw-publisher
 docker compose ${compose_files} run --rm ci-tester
